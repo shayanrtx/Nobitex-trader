@@ -1,0 +1,16 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    { "label": "1. Build image", "type": "shell", "command": "docker compose build", "problemMatcher": [] },
+    { "label": "2. Check connection", "type": "shell", "command": "docker compose run --rm trader check", "problemMatcher": [] },
+    { "label": "3. Download 90 days of candles", "type": "shell", "command": "docker compose run --rm trader fetch-candles --days 90 --out data/usdt_90d.csv", "problemMatcher": [] },
+    { "label": "4. Backtest (90 days)", "type": "shell", "command": "docker compose run --rm trader backtest --csv data/usdt_90d.csv", "problemMatcher": [] },
+    { "label": "5. Optimize parameters (walk-forward)", "type": "shell", "command": "docker compose run --rm trader optimize --csv data/usdt_90d.csv --configs 40", "problemMatcher": [] },
+    { "label": "6. Start bot (background)", "type": "shell", "command": "docker compose up -d", "problemMatcher": [] },
+    { "label": "7. Live logs", "type": "shell", "command": "docker compose logs -f --tail 200", "problemMatcher": [] },
+    { "label": "8. Status", "type": "shell", "command": "docker compose run --rm trader status", "problemMatcher": [] },
+    { "label": "9. Stop bot (cancels orders)", "type": "shell", "command": "docker compose down", "problemMatcher": [] },
+    { "label": "Update code & rebuild", "type": "shell", "command": "git pull && docker compose build && docker compose up -d", "problemMatcher": [] },
+    { "label": "Resume after risk halt", "type": "shell", "command": "docker compose run --rm trader resume", "problemMatcher": [] }
+  ]
+}
