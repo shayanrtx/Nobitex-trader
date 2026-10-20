@@ -1,0 +1,320 @@
+<!doctype html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>داشبورد ربات نوبیتکس</title>
+<style>
+:root {
+  --bg: #f4f5f7; --card: #ffffff; --text: #1d2330; --muted: #6b7385; --border: #e3e6ec;
+  --green: #12925a; --red: #d23f3f; --accent: #2f6fde; --amber: #c98a00; --grid: #eceef2;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #0f131a; --card: #171c25; --text: #e6e9ef; --muted: #8b93a5; --border: #262d3a;
+          --green: #2fbf7d; --red: #f06262; --accent: #5b8ff0; --amber: #e0a92e; --grid: #222935; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text);
+       font: 14px/1.5 Vazirmatn, Tahoma, "Segoe UI", sans-serif; }
+header { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between;
+         padding: 14px 20px; background: var(--card); border-bottom: 1px solid var(--border);
+         position: sticky; top: 0; z-index: 2; }
+h1 { font-size: 17px; margin: 0; }
+.chip { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 12px;
+        background: var(--grid); color: var(--muted); margin-inline-start: 6px; }
+.chip.ok { background: color-mix(in srgb, var(--green) 18%, transparent); color: var(--green); }
+.chip.warn { background: color-mix(in srgb, var(--amber) 20%, transparent); color: var(--amber); }
+.chip.bad { background: color-mix(in srgb, var(--red) 18%, transparent); color: var(--red); }
+button { font: inherit; border: 1px solid var(--border); background: var(--card); color: var(--text);
+         padding: 6px 14px; border-radius: 8px; cursor: pointer; }
+button:hover { border-color: var(--accent); }
+button.danger { color: var(--red); }
+button.sel { background: var(--accent); color: #fff; border-color: var(--accent); }
+main { padding: 16px 20px 40px; max-width: 1400px; margin: 0 auto; display: grid; gap: 16px; }
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }
+.card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; }
+.kpi .label { color: var(--muted); font-size: 12px; }
+.kpi .value { font-size: 20px; font-weight: 600; margin-top: 4px; direction: ltr; text-align: right; }
+.kpi .sub { color: var(--muted); font-size: 12px; margin-top: 2px; }
+.pos { color: var(--green); } .neg { color: var(--red); }
+.row { display: grid; grid-template-columns: 2fr 1fr; gap: 16px; }
+@media (max-width: 900px) { .row { grid-template-columns: 1fr; } }
+.card h2 { font-size: 14px; margin: 0 0 10px; display: flex; justify-content: space-between;
+           align-items: center; gap: 8px; flex-wrap: wrap; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { padding: 6px 8px; border-bottom: 1px solid var(--border); text-align: right; white-space: nowrap; }
+th { color: var(--muted); font-weight: 500; }
+td.num { direction: ltr; text-align: right; font-variant-numeric: tabular-nums; }
+.scroll { max-height: 380px; overflow: auto; }
+svg { width: 100%; display: block; }
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 13px; }
+.kv div:nth-child(odd) { color: var(--muted); }
+.kv div:nth-child(even) { direction: ltr; text-align: right; }
+.lvl-warning { color: var(--amber); } .lvl-error { color: var(--red); }
+.midrow td { background: var(--grid); font-weight: 600; }
+#login { max-width: 360px; margin: 15vh auto; }
+#login input { width: 100%; padding: 8px; margin: 10px 0; border-radius: 8px; border: 1px solid var(--border);
+               background: var(--bg); color: var(--text); font: inherit; }
+.muted { color: var(--muted); }
+.seg { display: inline-flex; gap: 4px; }
+.seg button { padding: 3px 10px; font-size: 12px; }
+</style>
+</head>
+<body>
+<div id="login" class="card" hidden>
+  <h1>ورود به داشبورد</h1>
+  <p class="muted">توکن داشبورد (NBX_DASHBOARD_TOKEN) را وارد کنید.</p>
+  <input id="token" type="password" autocomplete="current-password">
+  <button id="loginBtn">ورود</button>
+  <p id="loginErr" class="neg"></p>
+</div>
+
+<div id="app" hidden>
+<header>
+  <div>
+    <h1>ربات نوسان‌گیری نوبیتکس <span id="market" class="chip"></span><span id="mode" class="chip"></span><span id="state" class="chip"></span></h1>
+    <div class="muted" id="subline"></div>
+  </div>
+  <div style="display:flex; gap:8px; flex-wrap:wrap">
+    <button id="pauseBtn">⏸ توقف موقت</button>
+    <button id="resumeBtn">▶️ ادامه</button>
+    <button id="cancelBtn" class="danger">لغو همه سفارش‌ها</button>
+    <button id="logoutBtn">خروج</button>
+  </div>
+</header>
+
+<main>
+  <section class="kpis" id="kpis"></section>
+
+  <div class="row">
+    <div class="card">
+      <h2>ارزش حساب (تومان)
+        <span class="seg" id="range">
+          <button data-h="6">۶ ساعت</button><button data-h="24" class="sel">۲۴ ساعت</button>
+          <button data-h="168">۷ روز</button><button data-h="720">۳۰ روز</button>
+        </span>
+      </h2>
+      <div id="equityChart"></div>
+      <div class="muted" style="font-size:12px">خط آبی: ارزش حساب — خط‌چین: قیمت تتر (محور جداگانه)</div>
+    </div>
+    <div class="card">
+      <h2>وضعیت استراتژی</h2>
+      <div class="kv" id="strategy"></div>
+    </div>
+  </div>
+
+  <div class="row">
+    <div class="card">
+      <h2>سود/زیان روزانه (تحقق‌یافته، تومان)</h2>
+      <div id="dailyChart"></div>
+    </div>
+    <div class="card">
+      <h2>دفتر سفارش‌های ربات</h2>
+      <div class="scroll"><table id="orders"></table></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>معاملات انجام‌شده</h2>
+    <div class="scroll"><table id="fills"></table></div>
+  </div>
+
+  <div class="card">
+    <h2>لاگ فعالیت‌ها
+      <span class="seg" id="kinds">
+        <button data-k="" class="sel">همه</button><button data-k="fill">معاملات</button>
+        <button data-k="order">سفارش‌ها</button><button data-k="risk">ریسک</button>
+        <button data-k="strategy">استراتژی</button><button data-k="error">خطا</button>
+        <button data-k="control">کنترل</button>
+      </span>
+    </h2>
+    <div class="scroll"><table id="events"></table></div>
+  </div>
+</main>
+</div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+let TOKEN = "";
+try { TOKEN = localStorage.getItem("nbx_token") || ""; } catch (e) {}
+let hours = 24, kind = "";
+
+const fa = new Intl.NumberFormat("fa-IR", { maximumFractionDigits: 0 });
+const fa2 = new Intl.NumberFormat("fa-IR", { maximumFractionDigits: 2 });
+const toman = (rial) => rial == null ? "—" : fa.format(rial / 10);
+const pct = (v) => v == null ? "—" : (v >= 0 ? "+" : "") + fa2.format(v) + "٪";
+const cls = (v) => v == null ? "" : v >= 0 ? "pos" : "neg";
+const time = (ts) => new Date(ts * 1000).toLocaleString("fa-IR", { hour12: false });
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+async function api(path, opts = {}) {
+  const res = await fetch(path, { ...opts, headers: { Authorization: "Bearer " + TOKEN } });
+  if (res.status === 401) { showLogin("توکن نامعتبر است"); throw new Error("unauthorized"); }
+  if (!res.ok) throw new Error(res.status);
+  return res.json();
+}
+
+function showLogin(err) {
+  $("app").hidden = true; $("login").hidden = false; $("loginErr").textContent = err || "";
+}
+$("loginBtn").onclick = () => {
+  TOKEN = $("token").value.trim();
+  try { localStorage.setItem("nbx_token", TOKEN); } catch (e) {}
+  start();
+};
+$("token").addEventListener("keydown", (e) => { if (e.key === "Enter") $("loginBtn").click(); });
+$("logoutBtn").onclick = () => { try { localStorage.removeItem("nbx_token"); } catch (e) {} TOKEN = ""; showLogin(); };
+
+async function control(action, confirmMsg) {
+  if (confirmMsg && !confirm(confirmMsg)) return;
+  await api("/api/control/" + action, { method: "POST" });
+  refreshFast();
+}
+$("pauseBtn").onclick = () => control("pause", "ربات متوقف و همه سفارش‌ها لغو شود؟");
+$("resumeBtn").onclick = () => control("resume", "ربات ادامه دهد؟ (توقف ریسک هم پاک می‌شود)");
+$("cancelBtn").onclick = () => control("cancel-all", "همه سفارش‌های ربات لغو شود؟");
+
+for (const b of $("range").querySelectorAll("button")) b.onclick = () => {
+  hours = +b.dataset.h; $("range").querySelectorAll("button").forEach((x) => x.classList.toggle("sel", x === b)); loadEquity();
+};
+for (const b of $("kinds").querySelectorAll("button")) b.onclick = () => {
+  kind = b.dataset.k; $("kinds").querySelectorAll("button").forEach((x) => x.classList.toggle("sel", x === b)); loadEvents();
+};
+
+function kpi(label, value, sub, c) {
+  return `<div class="card kpi"><div class="label">${label}</div><div class="value ${c || ""}">${value}</div>${sub ? `<div class="sub">${sub}</div>` : ""}</div>`;
+}
+
+function renderSummary(s) {
+  $("market").textContent = s.market;
+  $("mode").textContent = s.mode === "live" ? "واقعی" : "آزمایشی (paper)";
+  $("mode").className = "chip " + (s.mode === "live" ? "bad" : "warn");
+  let st = "در حال معامله", sc = "ok";
+  if (s.halted) { st = "متوقف (ریسک)"; sc = "bad"; }
+  else if (s.paused) { st = "توقف موقت"; sc = "warn"; }
+  else if (s.risk_reason) { st = "منتظر: " + s.risk_reason; sc = "warn"; }
+  else if (s.strategy_info && s.strategy_info.state === "warming_up") { st = "گرم شدن"; sc = "warn"; }
+  $("state").textContent = st; $("state").className = "chip " + sc;
+  const up = s.uptime_seconds; const h = Math.floor(up / 3600), m = Math.floor(up % 3600 / 60);
+  $("subline").textContent = `مدت اجرا ${fa.format(h)} ساعت و ${fa.format(m)} دقیقه — تازگی اردربوک ${fa2.format(s.book_age_seconds ?? 0)} ثانیه — ${fa.format(s.open_orders)} سفارش باز`;
+
+  const spread = s.best_bid && s.best_ask ? (s.best_ask - s.best_bid) / s.best_bid * 100 : null;
+  $("kpis").innerHTML = [
+    kpi("ارزش کل حساب ربات", toman(s.equity) + " ت", s.equity_usdt != null ? fa2.format(s.equity_usdt) + " USDT" : ""),
+    kpi("بازده کل", pct(s.return_pct), "نگهداری صرف: " + pct(s.hold_return_pct), cls(s.return_pct)),
+    kpi("سود/زیان امروز", toman(s.today_pnl) + " ت", "", cls(s.today_pnl)),
+    kpi("سود تحقق‌یافته", toman(s.realized_pnl) + " ت", fa.format(s.fills || 0) + " معامله", cls(s.realized_pnl)),
+    kpi("سود/زیان شناور", toman(s.unrealized_pnl) + " ت", "میانگین خرید: " + toman(s.avg_cost), cls(s.unrealized_pnl)),
+    kpi("کارمزد پرداختی", toman(s.fees) + " ت", ""),
+    kpi("موجودی تتر", fa2.format(s.base ?? 0) + " USDT", "ریال: " + toman(s.quote) + " ت"),
+    kpi("قیمت تتر", toman(s.mid) + " ت", `خرید ${toman(s.best_bid)} / فروش ${toman(s.best_ask)} — اسپرد ${spread == null ? "—" : fa2.format(spread) + "٪"}`),
+  ].join("");
+
+  const i = s.strategy_info || {};
+  const labels = {
+    state: "وضعیت", fair: "قیمت منصفانه (EMA)", reservation: "مرکز گرید", spacing_pct: "فاصله گرید ٪",
+    atr_pct: "نوسان (ATR) ٪", trend: "روند (−۱ تا +۱)", target_base_ratio: "سهم هدف تتر",
+    base_ratio: "سهم فعلی تتر", imbalance: "عدم‌توازن اردربوک", momentum_pct: "مومنتوم کوتاه‌مدت ٪",
+    guard: "محافظ", sell_floor: "کف قیمت فروش", candles: "کندل‌ها",
+  };
+  const rial = new Set(["fair", "reservation", "sell_floor", "mid"]);
+  const words = { quoting: "فعال", warming_up: "در حال گرم شدن", "falling fast: buys paused": "ریزش سریع — خرید متوقف",
+                  "rising fast: sells paused": "رشد سریع — فروش متوقف" };
+  $("strategy").innerHTML = Object.entries(labels).filter(([k]) => k in i).map(([k, l]) => {
+    let v = i[k]; if (v == null) v = "—"; else if (rial.has(k)) v = toman(v) + " ت";
+    else if (words[v]) v = words[v];
+    else if (typeof v === "number") v = fa2.format(v);
+    return `<div>${l}</div><div>${esc(v)}</div>`;
+  }).join("");
+}
+
+function renderOrders(orders, mid) {
+  const sells = orders.filter((o) => o.side === "sell").sort((a, b) => b.price - a.price);
+  const buys = orders.filter((o) => o.side === "buy").sort((a, b) => b.price - a.price);
+  const row = (o) => `<tr><td class="${o.side === "buy" ? "pos" : "neg"}">${o.side === "buy" ? "خرید" : "فروش"}</td>
+    <td class="num">${toman(o.price)}</td><td class="num">${fa2.format(o.amount)}</td>
+    <td class="num">${fa2.format(o.matched)}</td><td>${esc(o.tag)}</td></tr>`;
+  $("orders").innerHTML = `<tr><th>نوع</th><th>قیمت (ت)</th><th>مقدار</th><th>پر شده</th><th>سطح</th></tr>`
+    + sells.map(row).join("")
+    + `<tr class="midrow"><td>قیمت فعلی</td><td class="num">${toman(mid)}</td><td colspan="3"></td></tr>`
+    + buys.map(row).join("");
+}
+
+function renderFills(fills) {
+  $("fills").innerHTML = `<tr><th>زمان</th><th>نوع</th><th>قیمت (ت)</th><th>مقدار</th><th>ارزش (ت)</th><th>کارمزد</th><th>سود/زیان (ت)</th></tr>`
+    + fills.map((f) => `<tr><td>${time(f.ts)}</td><td class="${f.side === "buy" ? "pos" : "neg"}">${f.side === "buy" ? "خرید" : "فروش"}</td>
+      <td class="num">${toman(f.price)}</td><td class="num">${fa2.format(f.amount)}</td>
+      <td class="num">${toman(f.price * f.amount)}</td><td class="num">${f.fee_currency === "rls" ? toman(f.fee) + " ت" : fa2.format(f.fee) + " " + esc(f.fee_currency)}</td>
+      <td class="num ${cls(f.pnl)}">${f.pnl == null ? "—" : toman(f.pnl)}</td></tr>`).join("");
+}
+
+function renderEvents(evs) {
+  $("events").innerHTML = `<tr><th>زمان</th><th>نوع</th><th>شرح</th></tr>`
+    + evs.map((e) => `<tr class="lvl-${esc(e.level)}"><td>${time(e.ts)}</td><td>${esc(e.kind)}</td><td style="white-space:normal;direction:ltr;text-align:left">${esc(e.message)}</td></tr>`).join("");
+}
+
+function lineChart(el, points, keyA, keyB) {
+  const W = 800, H = 260, P = 36;
+  if (points.length < 2) { el.innerHTML = '<p class="muted">داده کافی هنوز ثبت نشده است.</p>'; return; }
+  const xs = points.map((p) => p.ts), x0 = Math.min(...xs), x1 = Math.max(...xs);
+  const scale = (vals) => { let lo = Math.min(...vals), hi = Math.max(...vals); if (hi === lo) { hi += 1; lo -= 1; } return [lo, hi]; };
+  const [a0, a1] = scale(points.map((p) => p[keyA])), [b0, b1] = scale(points.map((p) => p[keyB]));
+  const X = (t) => P + (t - x0) / (x1 - x0) * (W - 2 * P);
+  const YA = (v) => H - P - (v - a0) / (a1 - a0) * (H - 2 * P);
+  const YB = (v) => H - P - (v - b0) / (b1 - b0) * (H - 2 * P);
+  const path = (Y, k) => points.map((p, i) => (i ? "L" : "M") + X(p.ts).toFixed(1) + "," + Y(p[k]).toFixed(1)).join("");
+  let grid = "";
+  for (let i = 0; i <= 4; i++) {
+    const y = P + i * (H - 2 * P) / 4, v = a1 - i * (a1 - a0) / 4;
+    grid += `<line x1="${P}" x2="${W - P}" y1="${y}" y2="${y}" stroke="var(--grid)"/>`
+      + `<text x="${W - P + 4}" y="${y + 4}" font-size="10" fill="var(--muted)" text-anchor="start">${fa.format(v / 10)}</text>`;
+  }
+  const t0 = new Date(x0 * 1000).toLocaleString("fa-IR", { hour12: false, month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  const t1 = new Date(x1 * 1000).toLocaleString("fa-IR", { hour12: false, month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  el.innerHTML = `<svg viewBox="0 0 ${W + 30} ${H}" role="img" aria-label="equity chart">${grid}
+    <path d="${path(YB, keyB)}" fill="none" stroke="var(--muted)" stroke-width="1.2" stroke-dasharray="4 3"/>
+    <path d="${path(YA, keyA)}" fill="none" stroke="var(--accent)" stroke-width="2"/>
+    <text x="${P}" y="${H - 10}" font-size="10" fill="var(--muted)">${t0}</text>
+    <text x="${W - P}" y="${H - 10}" font-size="10" fill="var(--muted)" text-anchor="end">${t1}</text></svg>`;
+}
+
+function barChart(el, days) {
+  const W = 800, H = 220, P = 30;
+  if (!days.length) { el.innerHTML = '<p class="muted">هنوز معامله‌ای انجام نشده است.</p>'; return; }
+  const max = Math.max(1, ...days.map((d) => Math.abs(d.pnl)));
+  const bw = (W - 2 * P) / days.length, zero = H / 2;
+  const bars = days.map((d, i) => {
+    const h = Math.abs(d.pnl) / max * (H / 2 - P), y = d.pnl >= 0 ? zero - h : zero;
+    return `<rect x="${(P + i * bw + bw * 0.15).toFixed(1)}" y="${y.toFixed(1)}" width="${(bw * 0.7).toFixed(1)}" height="${Math.max(h, 1).toFixed(1)}" rx="2" fill="${d.pnl >= 0 ? "var(--green)" : "var(--red)"}"><title>${d.day}: ${toman(d.pnl)} ت — ${d.buys + d.sells} معامله</title></rect>`;
+  }).join("");
+  el.innerHTML = `<svg viewBox="0 0 ${W} ${H}"><line x1="${P}" x2="${W - P}" y1="${zero}" y2="${zero}" stroke="var(--border)"/>${bars}
+    <text x="${W - P}" y="${H - 6}" font-size="10" fill="var(--muted)" text-anchor="end" direction="ltr">${days[0].day}</text>
+    <text x="${P}" y="${H - 6}" font-size="10" fill="var(--muted)" direction="ltr">${days[days.length - 1].day}</text></svg>`;
+}
+
+let lastMid = null;
+async function refreshFast() {
+  const [s, o] = await Promise.all([api("/api/summary"), api("/api/orders")]);
+  lastMid = s.mid; renderSummary(s); renderOrders(o, s.mid);
+}
+async function loadEquity() { lineChart($("equityChart"), await api("/api/equity?hours=" + hours), "equity", "price"); }
+async function loadEvents() { renderEvents(await api("/api/events?limit=300" + (kind ? "&kind=" + kind : ""))); }
+async function refreshSlow() {
+  const [f, d] = await Promise.all([api("/api/fills?limit=200"), api("/api/stats?days=30")]);
+  renderFills(f); barChart($("dailyChart"), d); await Promise.all([loadEquity(), loadEvents()]);
+}
+
+let timers = [];
+async function start() {
+  if (!TOKEN) { showLogin(); return; }
+  try { await refreshFast(); } catch (e) { return; }
+  $("login").hidden = true; $("app").hidden = false;
+  refreshSlow();
+  timers.forEach(clearInterval);
+  timers = [setInterval(() => refreshFast().catch(() => {}), 3000), setInterval(() => refreshSlow().catch(() => {}), 15000)];
+}
+start();
+</script>
+</body>
+</html>

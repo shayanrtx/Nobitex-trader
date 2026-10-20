@@ -1,0 +1,92 @@
+# ──────────────────────────────────────────────────────────────────────────────
+#  تنظیمات ربات — این فایل را به config.yaml کپی کنید.
+#  همه قیمت‌ها و مبالغ ریالی به «ریال» هستند (نه تومان). ۱ تومان = ۱۰ ریال.
+#  هر مقدار را می‌توان با متغیر محیطی هم عوض کرد: NBX_GRID__LEVELS=6
+# ──────────────────────────────────────────────────────────────────────────────
+
+mode: paper            # paper = شبیه‌سازی روی قیمت واقعی | live = معامله واقعی
+strategy: adaptive_grid
+log_level: INFO
+log_json: false
+
+market:
+  symbol: USDTIRT
+  src: usdt
+  dst: rls
+  price_tick: 10           # گام قیمت (ریال)
+  amount_step: 0.01        # گام مقدار تتر
+  min_notional: 3000000    # حداقل ارزش سفارش نوبیتکس در بازار ریالی (۳ میلیون ریال)
+  maker_fee: 0.0025        # ⚠️ کارمزد سطح کاربری خودتان را وارد کنید (پروفایل نوبیتکس)
+  taker_fee: 0.0025
+
+capital:                   # سقف سرمایه‌ای که ربات اجازه دارد استفاده کند (حالت live)
+  max_quote: 500000000     # ریال (= ۵۰ میلیون تومان)
+  max_base: 0              # تتری که ربات از ابتدا اجازه فروشش را دارد
+
+grid:
+  candle_resolution: "15"  # تایم‌فریم کندل برای اندیکاتورها
+  candle_history: 200
+  fair_ema_period: 48      # میانگین «قیمت منصفانه» (۴۸ × ۱۵ دقیقه = ۱۲ ساعت)
+  atr_period: 14
+  trend_fast_ema: 24
+  trend_slow_ema: 96
+
+  levels: 4                # تعداد پله در هر طرف
+  order_notional: 50000000 # ارزش هر سفارش (ریال) = ۵ میلیون تومان
+  spacing_atr_mult: 0.6    # فاصله پله‌ها = این ضریب × ATR
+  min_spacing_pct: 0.7     # حداقل فاصله (باید از ۲ × کارمزد بیشتر باشد)
+  max_spacing_pct: 3.0
+  level_growth: 1.25       # هر پله دورتر، کمی بازتر
+
+  target_base_ratio: 0.5   # سهم هدف تتر از کل دارایی
+  min_base_ratio: 0.15
+  max_base_ratio: 0.85
+  trend_skew: 0.25         # در روند صعودی تتر بیشتر نگه دار، در نزولی کمتر
+  inventory_skew: 1.0      # شدت متمایل‌شدن گرید به سمت متعادل‌سازی موجودی
+
+  imbalance_levels: 5      # سیگنال سریع: عدم‌توازن ۵ پله اول اردربوک
+  imbalance_weight: 0.3
+  momentum_window_seconds: 180      # محافظ مومنتوم: حرکت تند در ۳ دقیقه
+  momentum_threshold_spacing: 0.8   # اگر قیمت بیش از ۰٫۸ فاصله پله حرکت کرد، خلاف جهت سفارش نده
+
+  sell_above_cost: true             # هرگز زیر میانگین خرید + کارمزد + حاشیه نفروش
+  min_profit_over_cost_pct: 0.2
+
+risk:
+  max_daily_loss_pct: 3             # توقف تا فردا اگر ضرر امروز از ۳٪ بیشتر شد
+  max_drawdown_pct: 10              # توقف کامل (نیاز به resume) اگر افت از قله ۱۰٪ شد
+  max_spread_pct: 1.5
+  stale_data_seconds: 30            # اگر داده قیمت کهنه شد همه سفارش‌ها لغو می‌شود
+  circuit_breaker_move_pct: 2.5     # حرکت ۲٫۵٪ در ۲ دقیقه = توقف موقت ۱۰ دقیقه‌ای
+  circuit_breaker_window_seconds: 120
+  circuit_breaker_cooldown_seconds: 600
+  max_open_orders: 12
+  max_price_deviation_pct: 10
+  timezone: Asia/Tehran
+
+engine:
+  tick_seconds: 5
+  min_requote_seconds: 3            # حداقل فاصله بین بازچینی سفارش‌ها
+  requote_tolerance_pct: 0.15       # تغییر کمتر از این، سفارش را جابه‌جا نمی‌کند (حفظ صف)
+  order_sync_seconds: 6
+  equity_snapshot_seconds: 60
+  cancel_on_shutdown: true
+  client_order_prefix: nbxt
+  order_rate_limit: 240             # سقف سفارش در ۱۰ دقیقه (نوبیتکس: ۳۰۰)
+  order_rate_window_seconds: 600
+
+paper:                              # موجودی مجازی حالت paper
+  initial_base: 0
+  initial_quote: 500000000
+
+notify:
+  enabled: false
+  api_base: https://tapi.bale.ai    # بله (داخل ایران). برای تلگرام: https://api.telegram.org
+  chat_id: ""
+  proxy: null                       # فقط برای پیام‌ها، مثلاً socks5://127.0.0.1:1080
+  notify_fills: true
+
+dashboard:
+  enabled: true
+  host: 127.0.0.1                   # در Docker خودکار 0.0.0.0 است (فقط روی 127.0.0.1 منتشر می‌شود)
+  port: 8080

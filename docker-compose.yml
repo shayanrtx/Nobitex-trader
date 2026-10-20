@@ -1,0 +1,19 @@
+services:
+  trader:
+    build: .
+    image: nobitex-trader:latest
+    container_name: nobitex-trader
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./data:/app/data
+    ports:
+      # Dashboard only reachable from this machine: http://127.0.0.1:8080
+      - "127.0.0.1:8080:8080"
+    stop_grace_period: 40s   # time to cancel open orders on shutdown
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
