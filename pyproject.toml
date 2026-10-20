@@ -36,7 +36,7 @@ nobitex-trader = "nobitex_trader.cli:main"
 include = ["nobitex_trader*"]
 
 [tool.setuptools.package-data]
-nobitex_trader = ["dashboard/*.html"]
+nobitex_trader = ["dashboard/*.html", "dashboard/static/fonts/*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

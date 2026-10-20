@@ -6,15 +6,18 @@ import asyncio
 import contextlib
 import logging
 import signal
+from dataclasses import replace
+from decimal import Decimal
 from typing import Any
 
 from nobitex_trader.config import Settings
 from nobitex_trader.data.market_data import MarketDataFeed
+from nobitex_trader.domain.market import MarketSpec
 from nobitex_trader.engine import TradingEngine
 from nobitex_trader.exchange.auth import ApiKeyAuth, Authenticator, TokenAuth
 from nobitex_trader.exchange.base import TradingVenue
 from nobitex_trader.exchange.paper import PaperVenue
-from nobitex_trader.exchange.rest import NobitexRestClient
+from nobitex_trader.exchange.rest import NobitexRestClient, account_fee
 from nobitex_trader.exchange.websocket import CentrifugoClient
 from nobitex_trader.notify import BotApiNotifier, Notifier
 from nobitex_trader.persistence.store import Store
@@ -53,6 +56,30 @@ def build_notifier(settings: Settings) -> Notifier:
     return Notifier()
 
 
+def _pct(fraction: Decimal) -> str:
+    return format((fraction * 100).normalize(), "f")
+
+
+def apply_account_fees(
+    market: MarketSpec, profile: dict[str, Any], store: Store, notifier: Notifier
+) -> MarketSpec:
+    """Use the fee of the user's actual Nobitex tier instead of the configured guess."""
+    fee = account_fee(profile, market.dst)
+    if fee is None:
+        log.warning("could not read fee tier from profile; using configured fees")
+        return market
+    if fee != market.maker_fee or fee != market.taker_fee:
+        msg = (f"fee tier detected from account: {_pct(fee)}% "
+               f"(config had maker {_pct(market.maker_fee)}% / taker {_pct(market.taker_fee)}%)")
+        log.info(msg)
+        store.log_event("fees", f"کارمزد حساب {_pct(fee)}٪ تشخیص داده شد و اعمال شد "
+                                f"(تنظیمات: {_pct(market.maker_fee)}٪)")
+        notifier.send(f"ℹ️ کارمزد حساب شما {_pct(fee)}٪ تشخیص داده شد و اعمال شد.")
+    else:
+        store.log_event("fees", f"کارمزد حساب {_pct(fee)}٪ تأیید شد")
+    return replace(market, maker_fee=fee, taker_fee=fee)
+
+
 def _start_dashboard(
     settings: Settings, engine: TradingEngine
 ) -> tuple[Any, asyncio.Task[None]] | None:
@@ -88,6 +115,11 @@ async def run_bot(settings: Settings) -> None:
     strategy = create_strategy(settings)
     live = settings.mode == "live"
 
+    profile: dict[str, Any] | None = None
+    if rest.has_auth:
+        profile = await rest.profile()
+        market = apply_account_fees(market, profile, store, notifier)
+
     ws: CentrifugoClient | None = None
     if settings.exchange.use_websocket:
         token_provider = rest.websocket_token if live else None
@@ -121,8 +153,7 @@ async def run_bot(settings: Settings) -> None:
 
     engine = TradingEngine(settings, market, feed, venue, strategy, store, notifier)
 
-    if live and ws is not None:
-        profile = await rest.profile()
+    if live and ws is not None and profile is not None:
         param = profile.get("websocketAuthParam")
         if param:
             ws.subscribe(f"private:orders#{param}", lambda _c, _d: engine.notify_order_event())

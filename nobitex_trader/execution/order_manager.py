@@ -37,6 +37,7 @@ from nobitex_trader.exchange.errors import (
     UnknownOrderState,
 )
 from nobitex_trader.exchange.rate_limiter import SlidingWindowLimiter
+from nobitex_trader.fmt import SIDE_FA, fmt_rial
 from nobitex_trader.persistence.store import Store
 from nobitex_trader.strategy.base import Quote
 
@@ -70,6 +71,8 @@ class OrderManager:
         self.orders: dict[str, Order] = {}  # key -> latest known state (open or pending)
         self.pending: set[str] = set()  # placements with unknown outcome
         self.consecutive_rejections = 0
+        self.placed_count = 0
+        self.cancel_count = 0
 
     # ------------------------------------------------------------------ helpers
 
@@ -180,25 +183,58 @@ class OrderManager:
 
     # ---------------------------------------------------------------- reconcile
 
-    def _matches(self, order: Order, quote: Quote) -> bool:
+    def _tolerance_for(self, quote: Quote, mid: Decimal) -> Decimal:
+        """Requote tolerance for one quote.
+
+        * Far levels tolerate proportionally more drift (25% of their distance from
+          mid): moving a level 3% away by 0.2% buys nothing but costs queue priority
+          and order budget.
+        * When the order budget runs low, tolerance widens so the bot keeps a stable
+          book instead of burning the remaining budget on small adjustments.
+        """
+        distance = abs(quote.price - mid) / mid if mid > 0 else Decimal(0)
+        available = self._limiter.available()
+        if available < self._limiter.limit * 0.25:
+            budget_factor = Decimal(3)
+        elif available < self._limiter.limit * 0.5:
+            budget_factor = Decimal(2)
+        else:
+            budget_factor = Decimal(1)
+        return self._tolerance * budget_factor + distance * Decimal("0.25")
+
+    def _matches(self, order: Order, quote: Quote, tolerance: Decimal) -> bool:
         if order.side is not quote.side:
             return False
-        if abs(order.price - quote.price) / quote.price > self._tolerance:
+        if abs(order.price - quote.price) / quote.price > tolerance:
             return False
         # Keep partially filled orders as long as a meaningful amount remains.
         return order.remaining >= quote.amount * Decimal("0.5")
 
-    def plan(self, quotes: list[Quote]) -> tuple[list[Order], list[Quote]]:
-        """Return (orders to cancel, quotes to place)."""
+    def plan(self, quotes: list[Quote], mid: Decimal) -> tuple[list[Order], list[Quote]]:
+        """Return (orders to cancel, quotes to place), respecting the order budget."""
         unmatched = [o for o in self.open_orders if o.key not in self.pending]
         to_place: list[Quote] = []
-        for quote in quotes:
-            candidates = [o for o in unmatched if self._matches(o, quote)]
+        for quote in sorted(quotes, key=lambda q: abs(q.price - mid)):
+            tolerance = self._tolerance_for(quote, mid)
+            candidates = [o for o in unmatched if self._matches(o, quote, tolerance)]
             if candidates:
                 best = min(candidates, key=lambda o: abs(o.price - quote.price))
                 unmatched.remove(best)
             else:
                 to_place.append(quote)
+
+        # Budget: if we cannot place every replacement, keep the old order rather
+        # than cancel it and leave a hole in the book. Orders with no wanted
+        # counterpart on their side (e.g. paused by a guard) are always cancelled.
+        available = max(self._limiter.available(), 0)
+        deferred = to_place[available:]
+        to_place = to_place[:available]
+        for quote in deferred:
+            same_side = [o for o in unmatched if o.side is quote.side]
+            if same_side:
+                unmatched.remove(min(same_side, key=lambda o: abs(o.price - quote.price)))
+        if deferred:
+            log.warning("order budget low: %d replacement(s) deferred", len(deferred))
         return unmatched, to_place
 
     async def reconcile(self, quotes: list[Quote], mid: Decimal) -> None:
@@ -207,13 +243,11 @@ class OrderManager:
             await self.sync()
             if self.pending:
                 return
-        to_cancel, to_place = self.plan(quotes)
+        to_cancel, to_place = self.plan(quotes, mid)
         for order in to_cancel:
             await self.cancel(order)
-        to_place.sort(key=lambda q: abs(q.price - mid))
         for quote in to_place:
             if not self._limiter.try_acquire():
-                log.warning("order rate budget exhausted; %d quote(s) deferred", len(to_place))
                 break
             await self.place(quote)
 
@@ -248,7 +282,9 @@ class OrderManager:
             log.warning("order rejected (%s): %s %s @ %s", exc.code, quote.side.value,
                         quote.amount, quote.price)
             self._store.log_event(
-                "order", f"rejected {quote.side.value} {quote.amount} @ {quote.price}: {exc}",
+                "order",
+                f"رد سفارش {SIDE_FA[quote.side.value]} {quote.amount} تتر به قیمت "
+                f"{fmt_rial(quote.price)}: {exc.code}",
                 level="warning",
             )
             return None
@@ -258,11 +294,14 @@ class OrderManager:
             log.warning("order placement failed: %r", exc)
             return None
         self.consecutive_rejections = 0
+        self.placed_count += 1
         if order.is_open:
             order = order.with_updates(tag=quote.tag, matched=ZERO, fee=ZERO)
         log.info("placed %s %s @ %s [%s]", order.side.value, order.amount, order.price, quote.tag)
         self._store.log_event(
-            "order", f"placed {order.side.value} {order.amount} @ {order.price} [{quote.tag}]",
+            "order",
+            f"ثبت {SIDE_FA[order.side.value]} {order.amount} تتر به قیمت {fmt_rial(order.price)}"
+            f" (پله {quote.tag[1:]})",
             data={"id": order.id, "cid": order.client_order_id},
         )
         if order.is_open:
@@ -273,6 +312,7 @@ class OrderManager:
         return order
 
     async def cancel(self, order: Order) -> None:
+        self.cancel_count += 1
         try:
             final = await self._venue.cancel_order(self._market, order)
         except OrderNotFound:
@@ -283,7 +323,9 @@ class OrderManager:
             log.warning("cancel %s failed: %r", order.key, exc)
             return
         self._store.log_event(
-            "order", f"cancel {order.side.value} {order.remaining} @ {order.price} [{order.tag}]",
+            "order",
+            f"لغو {SIDE_FA[order.side.value]} {order.remaining} تتر به قیمت {fmt_rial(order.price)}"
+            f" (پله {order.tag[1:]})",
             data={"id": order.id},
         )
         if final is not None:

@@ -5,6 +5,12 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>داشبورد ربات نوبیتکس</title>
 <style>
+@font-face { font-family: Vazirmatn; font-weight: 400; font-display: swap;
+  src: url("/static/fonts/Vazirmatn-Regular.woff2") format("woff2"); }
+@font-face { font-family: Vazirmatn; font-weight: 500; font-display: swap;
+  src: url("/static/fonts/Vazirmatn-Medium.woff2") format("woff2"); }
+@font-face { font-family: Vazirmatn; font-weight: 700; font-display: swap;
+  src: url("/static/fonts/Vazirmatn-Bold.woff2") format("woff2"); }
 :root {
   --bg: #f4f5f7; --card: #ffffff; --text: #1d2330; --muted: #6b7385; --border: #e3e6ec;
   --green: #12925a; --red: #d23f3f; --accent: #2f6fde; --amber: #c98a00; --grid: #eceef2;
@@ -15,7 +21,9 @@
 }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--text);
-       font: 14px/1.5 Vazirmatn, Tahoma, "Segoe UI", sans-serif; }
+       font: 14px/1.6 Vazirmatn, Tahoma, sans-serif; }
+button, input, table { font-family: inherit; }
+.n { unicode-bidi: isolate; direction: ltr; display: inline-block; font-variant-numeric: tabular-nums; }
 header { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between;
          padding: 14px 20px; background: var(--card); border-bottom: 1px solid var(--border);
          position: sticky; top: 0; z-index: 2; }
@@ -31,32 +39,38 @@ button:hover { border-color: var(--accent); }
 button.danger { color: var(--red); }
 button.sel { background: var(--accent); color: #fff; border-color: var(--accent); }
 main { padding: 16px 20px 40px; max-width: 1400px; margin: 0 auto; display: grid; gap: 16px; }
-.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }
+.kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+@media (max-width: 1100px) { .kpis { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 420px) { .kpis { gap: 8px; } .kpi .value { font-size: 17px; } .card { padding: 12px; } }
 .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; }
 .kpi .label { color: var(--muted); font-size: 12px; }
-.kpi .value { font-size: 20px; font-weight: 600; margin-top: 4px; direction: ltr; text-align: right; }
+.kpi .value { font-size: 21px; font-weight: 700; margin-top: 4px; }
 .kpi .sub { color: var(--muted); font-size: 12px; margin-top: 2px; }
+.kpi small { font-size: 12px; font-weight: 500; color: var(--muted); }
 .pos { color: var(--green); } .neg { color: var(--red); }
-.row { display: grid; grid-template-columns: 2fr 1fr; gap: 16px; }
-@media (max-width: 900px) { .row { grid-template-columns: 1fr; } }
+.row { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 16px; }
+@media (max-width: 900px) { .row { grid-template-columns: minmax(0, 1fr); } }
+main > *, .row > *, .kpis > * { min-width: 0; }
+html, body { overflow-x: hidden; }
+@media (max-width: 600px) { header { padding: 12px 16px; } main { padding: 12px 16px 32px; } }
 .card h2 { font-size: 14px; margin: 0 0 10px; display: flex; justify-content: space-between;
            align-items: center; gap: 8px; flex-wrap: wrap; }
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
 th, td { padding: 6px 8px; border-bottom: 1px solid var(--border); text-align: right; white-space: nowrap; }
 th { color: var(--muted); font-weight: 500; }
-td.num { direction: ltr; text-align: right; font-variant-numeric: tabular-nums; }
+td.num { font-variant-numeric: tabular-nums; }
 .scroll { max-height: 380px; overflow: auto; }
-svg { width: 100%; display: block; }
+svg { width: 100%; display: block; direction: ltr; }
 .kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 13px; }
 .kv div:nth-child(odd) { color: var(--muted); }
-.kv div:nth-child(even) { direction: ltr; text-align: right; }
+.kv div:nth-child(even) { font-weight: 500; }
 .lvl-warning { color: var(--amber); } .lvl-error { color: var(--red); }
 .midrow td { background: var(--grid); font-weight: 600; }
 #login { max-width: 360px; margin: 15vh auto; }
 #login input { width: 100%; padding: 8px; margin: 10px 0; border-radius: 8px; border: 1px solid var(--border);
                background: var(--bg); color: var(--text); font: inherit; }
 .muted { color: var(--muted); }
-.seg { display: inline-flex; gap: 4px; }
+.seg { display: inline-flex; flex-wrap: wrap; gap: 4px; }
 .seg button { padding: 3px 10px; font-size: 12px; }
 </style>
 </head>
@@ -142,10 +156,13 @@ let hours = 24, kind = "";
 
 const fa = new Intl.NumberFormat("fa-IR", { maximumFractionDigits: 0 });
 const fa2 = new Intl.NumberFormat("fa-IR", { maximumFractionDigits: 2 });
-const toman = (rial) => rial == null ? "—" : fa.format(rial / 10);
-const pct = (v) => v == null ? "—" : (v >= 0 ? "+" : "") + fa2.format(v) + "٪";
+const n = (text) => `<span class="n">${text}</span>`;
+const toman = (rial) => rial == null ? "—" : n(fa.format(rial / 10));
+const num = (v) => v == null ? "—" : n(fa2.format(v));
+const pct = (v) => v == null ? "—" : n((v >= 0 ? "+" : "−") + fa2.format(Math.abs(v)) + "٪");
 const cls = (v) => v == null ? "" : v >= 0 ? "pos" : "neg";
 const time = (ts) => new Date(ts * 1000).toLocaleString("fa-IR", { hour12: false });
+const faDigits = (s) => String(s).replace(/(\d)\.(\d)/g, "$1٫$2").replace(/,/g, "٬").replace(/\d/g, (d) => "۰۱۲۳۴۵۶۷۸۹"[d]);
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
 async function api(path, opts = {}) {
@@ -193,49 +210,63 @@ function renderSummary(s) {
   let st = "در حال معامله", sc = "ok";
   if (s.halted) { st = "متوقف (ریسک)"; sc = "bad"; }
   else if (s.paused) { st = "توقف موقت"; sc = "warn"; }
-  else if (s.risk_reason) { st = "منتظر: " + s.risk_reason; sc = "warn"; }
-  else if (s.strategy_info && s.strategy_info.state === "warming_up") { st = "گرم شدن"; sc = "warn"; }
+  else if (s.risk_reason) { st = "منتظر: " + (RISK[s.risk_code] || s.risk_reason); sc = "warn"; }
+  else if (s.strategy_info && s.strategy_info.state === "warming_up") { st = "در حال گرم شدن"; sc = "warn"; }
   $("state").textContent = st; $("state").className = "chip " + sc;
   const up = s.uptime_seconds; const h = Math.floor(up / 3600), m = Math.floor(up % 3600 / 60);
-  $("subline").textContent = `مدت اجرا ${fa.format(h)} ساعت و ${fa.format(m)} دقیقه — تازگی اردربوک ${fa2.format(s.book_age_seconds ?? 0)} ثانیه — ${fa.format(s.open_orders)} سفارش باز`;
+  $("subline").innerHTML = `مدت اجرا ${n(fa.format(h))} ساعت و ${n(fa.format(m))} دقیقه · `
+    + `تازگی اردربوک ${num(s.book_age_seconds ?? 0)} ثانیه · ${n(fa.format(s.open_orders))} سفارش باز · `
+    + `کارمزد حساب ${num(s.maker_fee_pct)}٪`;
 
   const spread = s.best_bid && s.best_ask ? (s.best_ask - s.best_bid) / s.best_bid * 100 : null;
+  const T = (rial) => rial == null ? "—" : toman(rial) + " <small>تومان</small>";
   $("kpis").innerHTML = [
-    kpi("ارزش کل حساب ربات", toman(s.equity) + " ت", s.equity_usdt != null ? fa2.format(s.equity_usdt) + " USDT" : ""),
+    kpi("ارزش کل حساب ربات", T(s.equity), s.equity_usdt != null ? `معادل ${num(s.equity_usdt)} تتر` : ""),
     kpi("بازده کل", pct(s.return_pct), "نگهداری صرف: " + pct(s.hold_return_pct), cls(s.return_pct)),
-    kpi("سود/زیان امروز", toman(s.today_pnl) + " ت", "", cls(s.today_pnl)),
-    kpi("سود تحقق‌یافته", toman(s.realized_pnl) + " ت", fa.format(s.fills || 0) + " معامله", cls(s.realized_pnl)),
-    kpi("سود/زیان شناور", toman(s.unrealized_pnl) + " ت", "میانگین خرید: " + toman(s.avg_cost), cls(s.unrealized_pnl)),
-    kpi("کارمزد پرداختی", toman(s.fees) + " ت", ""),
-    kpi("موجودی تتر", fa2.format(s.base ?? 0) + " USDT", "ریال: " + toman(s.quote) + " ت"),
-    kpi("قیمت تتر", toman(s.mid) + " ت", `خرید ${toman(s.best_bid)} / فروش ${toman(s.best_ask)} — اسپرد ${spread == null ? "—" : fa2.format(spread) + "٪"}`),
+    kpi("سود/زیان امروز", T(s.today_pnl), "از ابتدای روز (وقت تهران)", cls(s.today_pnl)),
+    kpi("سود تحقق‌یافته", T(s.realized_pnl), `${n(fa.format(s.fills || 0))} معامله`, cls(s.realized_pnl)),
+    kpi("سود/زیان شناور", T(s.unrealized_pnl), "میانگین خرید: " + toman(s.avg_cost), cls(s.unrealized_pnl)),
+    kpi("کارمزد پرداختی", T(s.fees), `نرخ کارمزد: ${num(s.maker_fee_pct)}٪`),
+    kpi("موجودی تتر", `${num(s.base ?? 0)} <small>USDT</small>`, "موجودی ریالی: " + T(s.quote)),
+    kpi("قیمت تتر", T(s.mid), `خرید ${toman(s.best_bid)} · فروش ${toman(s.best_ask)} · اسپرد ${spread == null ? "—" : num(spread) + "٪"}`),
   ].join("");
 
   const i = s.strategy_info || {};
   const labels = {
-    state: "وضعیت", fair: "قیمت منصفانه (EMA)", reservation: "مرکز گرید", spacing_pct: "فاصله گرید ٪",
-    atr_pct: "نوسان (ATR) ٪", trend: "روند (−۱ تا +۱)", target_base_ratio: "سهم هدف تتر",
-    base_ratio: "سهم فعلی تتر", imbalance: "عدم‌توازن اردربوک", momentum_pct: "مومنتوم کوتاه‌مدت ٪",
-    guard: "محافظ", sell_floor: "کف قیمت فروش", candles: "کندل‌ها",
+    state: "وضعیت", fair: "قیمت منصفانه (EMA)", reservation: "مرکز گرید", spacing_pct: "فاصله پله‌ها (٪)",
+    atr_pct: "نوسان ATR (٪)", trend: "روند (−۱ تا +۱)", target_base_ratio: "سهم هدف تتر",
+    base_ratio: "سهم فعلی تتر", imbalance: "عدم‌توازن اردربوک", momentum_pct: "مومنتوم ۳ دقیقه (٪)",
+    guard: "محافظ مومنتوم", sell_floor: "کف قیمت فروش", candles: "کندل‌ها",
   };
-  const rial = new Set(["fair", "reservation", "sell_floor", "mid"]);
+  const rial = new Set(["fair", "reservation", "sell_floor"]);
   const words = { quoting: "فعال", warming_up: "در حال گرم شدن", "falling fast: buys paused": "ریزش سریع — خرید متوقف",
                   "rising fast: sells paused": "رشد سریع — فروش متوقف" };
   $("strategy").innerHTML = Object.entries(labels).filter(([k]) => k in i).map(([k, l]) => {
-    let v = i[k]; if (v == null) v = "—"; else if (rial.has(k)) v = toman(v) + " ت";
-    else if (words[v]) v = words[v];
-    else if (typeof v === "number") v = fa2.format(v);
-    return `<div>${l}</div><div>${esc(v)}</div>`;
+    const v = i[k];
+    let out;
+    if (v == null) out = k === "guard" ? "غیرفعال" : "—";
+    else if (rial.has(k)) out = T(v);
+    else if (words[v]) out = esc(words[v]);
+    else if (typeof v === "number") out = num(v);
+    else out = esc(v);
+    return `<div>${l}</div><div>${out}</div>`;
   }).join("");
 }
+
+const KINDS = { fill: "معامله", order: "سفارش", risk: "ریسک", strategy: "استراتژی", error: "خطا",
+  control: "کنترل", lifecycle: "اجرا", portfolio: "پورتفو", fees: "کارمزد" };
+const RISK = {
+  halted: "توقف ریسکی", no_book: "بدون اردربوک", stale: "داده قیمت کهنه", one_sided: "اردربوک یک‌طرفه",
+  spread: "اسپرد زیاد", circuit: "حرکت شدید قیمت (استراحت)", daily_loss: "حد ضرر روزانه", paused: "توقف موقت",
+};
 
 function renderOrders(orders, mid) {
   const sells = orders.filter((o) => o.side === "sell").sort((a, b) => b.price - a.price);
   const buys = orders.filter((o) => o.side === "buy").sort((a, b) => b.price - a.price);
   const row = (o) => `<tr><td class="${o.side === "buy" ? "pos" : "neg"}">${o.side === "buy" ? "خرید" : "فروش"}</td>
-    <td class="num">${toman(o.price)}</td><td class="num">${fa2.format(o.amount)}</td>
-    <td class="num">${fa2.format(o.matched)}</td><td>${esc(o.tag)}</td></tr>`;
-  $("orders").innerHTML = `<tr><th>نوع</th><th>قیمت (ت)</th><th>مقدار</th><th>پر شده</th><th>سطح</th></tr>`
+    <td class="num">${toman(o.price)}</td><td class="num">${num(o.amount)}</td>
+    <td class="num">${num(o.matched)}</td><td>${n(faDigits(esc(o.tag).slice(1)))}</td></tr>`;
+  $("orders").innerHTML = `<tr><th>نوع</th><th>قیمت (ت)</th><th>مقدار</th><th>پر شده</th><th>پله</th></tr>`
     + sells.map(row).join("")
     + `<tr class="midrow"><td>قیمت فعلی</td><td class="num">${toman(mid)}</td><td colspan="3"></td></tr>`
     + buys.map(row).join("");
@@ -244,14 +275,14 @@ function renderOrders(orders, mid) {
 function renderFills(fills) {
   $("fills").innerHTML = `<tr><th>زمان</th><th>نوع</th><th>قیمت (ت)</th><th>مقدار</th><th>ارزش (ت)</th><th>کارمزد</th><th>سود/زیان (ت)</th></tr>`
     + fills.map((f) => `<tr><td>${time(f.ts)}</td><td class="${f.side === "buy" ? "pos" : "neg"}">${f.side === "buy" ? "خرید" : "فروش"}</td>
-      <td class="num">${toman(f.price)}</td><td class="num">${fa2.format(f.amount)}</td>
-      <td class="num">${toman(f.price * f.amount)}</td><td class="num">${f.fee_currency === "rls" ? toman(f.fee) + " ت" : fa2.format(f.fee) + " " + esc(f.fee_currency)}</td>
+      <td class="num">${toman(f.price)}</td><td class="num">${num(f.amount)}</td>
+      <td class="num">${toman(f.price * f.amount)}</td><td class="num">${f.fee_currency === "rls" ? toman(f.fee) + " ت" : num(f.fee) + " تتر"}</td>
       <td class="num ${cls(f.pnl)}">${f.pnl == null ? "—" : toman(f.pnl)}</td></tr>`).join("");
 }
 
 function renderEvents(evs) {
   $("events").innerHTML = `<tr><th>زمان</th><th>نوع</th><th>شرح</th></tr>`
-    + evs.map((e) => `<tr class="lvl-${esc(e.level)}"><td>${time(e.ts)}</td><td>${esc(e.kind)}</td><td style="white-space:normal;direction:ltr;text-align:left">${esc(e.message)}</td></tr>`).join("");
+    + evs.map((e) => `<tr class="lvl-${esc(e.level)}"><td>${time(e.ts)}</td><td>${esc(KINDS[e.kind] || e.kind)}</td><td style="white-space:normal">${esc(faDigits(e.message))}</td></tr>`).join("");
 }
 
 function lineChart(el, points, keyA, keyB) {
@@ -283,14 +314,15 @@ function barChart(el, days) {
   const W = 800, H = 220, P = 30;
   if (!days.length) { el.innerHTML = '<p class="muted">هنوز معامله‌ای انجام نشده است.</p>'; return; }
   const max = Math.max(1, ...days.map((d) => Math.abs(d.pnl)));
-  const bw = (W - 2 * P) / days.length, zero = H / 2;
+  const slot = (W - 2 * P) / Math.max(days.length, 7), zero = H / 2;
+  const bw = slot, x0 = W - P - days.length * slot;  // newest day at the right edge
   const bars = days.map((d, i) => {
     const h = Math.abs(d.pnl) / max * (H / 2 - P), y = d.pnl >= 0 ? zero - h : zero;
-    return `<rect x="${(P + i * bw + bw * 0.15).toFixed(1)}" y="${y.toFixed(1)}" width="${(bw * 0.7).toFixed(1)}" height="${Math.max(h, 1).toFixed(1)}" rx="2" fill="${d.pnl >= 0 ? "var(--green)" : "var(--red)"}"><title>${d.day}: ${toman(d.pnl)} ت — ${d.buys + d.sells} معامله</title></rect>`;
+    return `<rect x="${(x0 + i * bw + bw * 0.15).toFixed(1)}" y="${y.toFixed(1)}" width="${(bw * 0.7).toFixed(1)}" height="${Math.max(h, 1).toFixed(1)}" rx="2" fill="${d.pnl >= 0 ? "var(--green)" : "var(--red)"}"><title>${d.day}: ${toman(d.pnl)} ت — ${d.buys + d.sells} معامله</title></rect>`;
   }).join("");
   el.innerHTML = `<svg viewBox="0 0 ${W} ${H}"><line x1="${P}" x2="${W - P}" y1="${zero}" y2="${zero}" stroke="var(--border)"/>${bars}
-    <text x="${W - P}" y="${H - 6}" font-size="10" fill="var(--muted)" text-anchor="end" direction="ltr">${days[0].day}</text>
-    <text x="${P}" y="${H - 6}" font-size="10" fill="var(--muted)" direction="ltr">${days[days.length - 1].day}</text></svg>`;
+    <text x="${x0}" y="${H - 6}" font-size="10" fill="var(--muted)">${days[0].day}</text>
+    <text x="${W - P}" y="${H - 6}" font-size="10" fill="var(--muted)" text-anchor="end">${days[days.length - 1].day}</text></svg>`;
 }
 
 let lastMid = null;

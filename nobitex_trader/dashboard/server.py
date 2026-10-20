@@ -16,6 +16,7 @@ from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from nobitex_trader.engine import TradingEngine
 
@@ -35,7 +36,10 @@ def create_app(engine: TradingEngine, token: str) -> FastAPI:
         raise ValueError("dashboard token required")
     app = FastAPI(title="Nobitex Trader", docs_url=None, redoc_url=None, openapi_url=None)
     store = engine.store
-    page = resources.files("nobitex_trader.dashboard").joinpath("index.html").read_text("utf-8")
+    package = resources.files("nobitex_trader.dashboard")
+    page = package.joinpath("index.html").read_text("utf-8")
+    # Bundled Vazirmatn font (OFL) — served locally, no CDN needed.
+    app.mount("/static", StaticFiles(directory=str(package.joinpath("static"))), name="static")
 
     def auth(authorization: str = Header(default="")) -> None:
         supplied = authorization.removeprefix("Bearer ").strip()

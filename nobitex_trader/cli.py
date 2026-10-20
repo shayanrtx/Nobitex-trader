@@ -18,6 +18,7 @@ import contextlib
 import json
 import sys
 import time
+from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
 
@@ -65,6 +66,13 @@ async def _check(settings: Settings) -> int:
 
         if settings.api_token or settings.api_key:
             try:
+                from nobitex_trader.exchange.rest import account_fee
+
+                fee = account_fee(await rest.profile(), market.dst)
+                if fee is not None:
+                    print(f"✅ account fee tier: {fee * 100:.3f}% (config: "
+                          f"{market.maker_fee * 100:.3f}%) — the bot applies the account value")
+                    market = replace(market, maker_fee=fee, taker_fee=fee)
                 bal = await rest.balances([market.src, market.dst])
                 print(f"✅ auth OK — {market.src}: {bal[market.src].free} free, "
                       f"{market.dst}: {bal[market.dst].free} free")

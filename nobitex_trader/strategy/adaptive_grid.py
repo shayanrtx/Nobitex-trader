@@ -46,6 +46,7 @@ class AdaptiveGridStrategy(Strategy):
         self.p = params
         self.mean_reversion_weight = mean_reversion_weight
         self._cache: tuple[Any, tuple[Decimal, Decimal, Decimal, Decimal]] | None = None
+        self._imbalance = Decimal(0)
 
     @property
     def warmup_candles(self) -> int:
@@ -61,11 +62,10 @@ class AdaptiveGridStrategy(Strategy):
         atr_ratio = atr_value / mid
 
         # 1. volatility-scaled spacing (fraction of price)
-        s = clamp(
-            p.spacing_atr_mult * atr_ratio,
-            p.min_spacing_pct / HUNDRED,
-            p.max_spacing_pct / HUNDRED,
-        )
+        # Floor: never tighter than the round-trip fee plus a 25% margin, whatever the
+        # config says — the actual fee tier may be detected at runtime.
+        min_s = max(p.min_spacing_pct / HUNDRED, market.round_trip_fee * Decimal("1.25"))
+        s = clamp(p.spacing_atr_mult * atr_ratio, min_s, max(min_s, p.max_spacing_pct / HUNDRED))
 
         # 2. trend signal in [-1, 1], normalised by volatility
         vol_unit = max(atr_ratio, p.min_spacing_pct / HUNDRED)
@@ -83,14 +83,21 @@ class AdaptiveGridStrategy(Strategy):
         stretch = clamp((mid - fair) / fair / max(s, Decimal("1e-9")), -ONE * 2, ONE * 2)
 
         # 5. order-book imbalance in [-1, 1]: positive = bid pressure → lean upward
-        imbalance = book_imbalance(book.bids, book.asks, p.imbalance_levels)
+        # Smoothed (EMA over ticks): raw imbalance flickers with every book update and
+        # would otherwise make the whole grid jitter.
+        raw_imbalance = book_imbalance(book.bids, book.asks, p.imbalance_levels)
+        self._imbalance += (raw_imbalance - self._imbalance) * Decimal("0.2")
+        imbalance = self._imbalance
 
         shift = (
             p.inventory_skew * deviation * 2
             + self.mean_reversion_weight * stretch / 2
             - p.imbalance_weight * imbalance / 2
         ) * s
-        reservation = mid * (ONE - shift)
+        # Snap the centre to a lattice of s/4 so it moves in discrete steps rather
+        # than drifting with every tick (fewer cancel/replace cycles).
+        lattice = max(fair * s / 4, market.price_tick)
+        reservation = (mid * (ONE - shift) / lattice).to_integral_value() * lattice
 
         buy_mult = clamp(ONE - deviation * 2, Decimal(0), Decimal(2))
         sell_mult = clamp(ONE + deviation * 2, Decimal(0), Decimal(2))

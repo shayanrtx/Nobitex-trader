@@ -167,3 +167,33 @@ def test_sliding_window_limiter() -> None:
     assert lim.try_acquire()
     lim.penalize(5)
     assert lim.available() == 0
+
+
+def test_account_fee_from_profile(market, store) -> None:  # type: ignore[no-untyped-def]
+    from nobitex_trader.app import apply_account_fees
+    from nobitex_trader.exchange.rest import account_fee
+    from nobitex_trader.notify import Notifier
+
+    profile = {"profile": {"options": {"fee": "0.35", "feeUsdt": "0.2"}}}
+    assert account_fee(profile, "rls") == Decimal("0.0035")
+    assert account_fee(profile, "usdt") == Decimal("0.002")
+    assert account_fee({}, "rls") is None
+    updated = apply_account_fees(market, profile, store, Notifier())
+    assert updated.maker_fee == updated.taker_fee == Decimal("0.0035")
+    assert any(r["kind"] == "fees" for r in store.events())
+
+
+def test_spacing_floor_follows_detected_fee(market) -> None:  # type: ignore[no-untyped-def]
+    import time
+    from dataclasses import replace
+
+    from nobitex_trader.config import GridSettings
+    from nobitex_trader.strategy.adaptive_grid import AdaptiveGridStrategy
+    from nobitex_trader.strategy.base import InventorySnapshot, StrategyContext
+    from tests.conftest import flat_candles, make_book
+
+    pricey = replace(market, maker_fee=Decimal("0.004"), taker_fee=Decimal("0.004"))
+    d = AdaptiveGridStrategy(GridSettings()).decide(StrategyContext(
+        pricey, make_book("999000", "1001000"), flat_candles(150),
+        InventorySnapshot(Decimal(250), Decimal(250_000_000), None), time.time()))
+    assert d.info["spacing_pct"] >= Decimal("1.0")  # 2 × 0.4% × 1.25

@@ -25,6 +25,7 @@ from nobitex_trader.exchange.base import TradingVenue
 from nobitex_trader.exchange.errors import AuthError, TransientError
 from nobitex_trader.exchange.rate_limiter import SlidingWindowLimiter
 from nobitex_trader.execution.order_manager import OrderManager
+from nobitex_trader.fmt import GUARD_FA, RISK_FA, SIDE_FA, fmt_rial
 from nobitex_trader.notify import Notifier
 from nobitex_trader.persistence.store import Store
 from nobitex_trader.portfolio import Portfolio
@@ -37,11 +38,6 @@ MAX_CONSECUTIVE_ERRORS = 20
 MAX_CONSECUTIVE_REJECTIONS = 10
 PRICE_HISTORY_SECONDS = 900
 _CONTROL_KEY = "control"
-
-
-def fmt_rial(value: Decimal) -> str:
-    """Human-friendly toman string from a rial amount."""
-    return f"{int(value / 10):,} تومان"
 
 
 class TradingEngine:
@@ -96,26 +92,26 @@ class TradingEngine:
         self._order_event.set()
         self.feed.updated.set()
 
-    def pause(self, source: str = "dashboard") -> None:
+    def pause(self, source: str = "داشبورد") -> None:
         self.paused = True
         self._cancel_all_requested = True
         self.store.set(_CONTROL_KEY, {"paused": True})
-        self.store.log_event("control", f"paused by {source}", level="warning")
+        self.store.log_event("control", f"توقف موقت توسط {source}", level="warning")
         self.notifier.send(f"⏸ ربات متوقف موقت شد ({source})")
         self.feed.updated.set()
 
-    def resume(self, source: str = "dashboard") -> None:
+    def resume(self, source: str = "داشبورد") -> None:
         self.paused = False
         self.risk.resume()
         self.oms.consecutive_rejections = 0
         self.store.set(_CONTROL_KEY, {"paused": False})
-        self.store.log_event("control", f"resumed by {source}")
+        self.store.log_event("control", f"ادامه‌ی معاملات توسط {source}")
         self.notifier.send(f"▶️ ربات ادامه داد ({source})")
         self.feed.updated.set()
 
-    def request_cancel_all(self, source: str = "dashboard") -> None:
+    def request_cancel_all(self, source: str = "داشبورد") -> None:
         self._cancel_all_requested = True
-        self.store.log_event("control", f"cancel-all requested by {source}", level="warning")
+        self.store.log_event("control", f"درخواست لغو همه‌ی سفارش‌ها توسط {source}", level="warning")
         self.feed.updated.set()
 
     # ------------------------------------------------------------------ status
@@ -129,9 +125,11 @@ class TradingEngine:
             "mode": self.settings.mode,
             "market": self.market.symbol,
             "strategy": self.strategy.name,
+            "maker_fee_pct": self.market.maker_fee * 100,
             "paused": self.paused,
             "halted": self.risk.halted_reason,
             "risk_reason": self.last_risk_reason,
+            "risk_code": self._risk_code,
             "uptime_seconds": int(time.time() - self.started_at),
             "best_bid": book.best_bid if book else None,
             "best_ask": book.best_ask if book else None,
@@ -193,7 +191,10 @@ class TradingEngine:
             base = min(self.settings.capital.max_base, balances[self.market.src].free)
             quote = min(self.settings.capital.max_quote, balances[self.market.dst].free)
         self.portfolio.initialize(base, quote, mid)
-        self.store.log_event("portfolio", f"initialized base={base} quote={quote} @ {mid}")
+        self.store.log_event(
+            "portfolio",
+            f"شروع حساب ربات: {base} تتر و {fmt_rial(quote)} — قیمت {fmt_rial(mid)}",
+        )
         log.info("initialized portfolio base=%s quote=%s @ %s", base, quote, mid)
 
     async def _refresh_exchange_caps(self) -> None:
@@ -209,8 +210,13 @@ class TradingEngine:
         st = self.portfolio.state
         assert st is not None
         if caps[0] < st.base * Decimal("0.99") or caps[1] < st.quote * Decimal("0.99"):
-            msg = f"wallet below bot book balance (USDT {caps[0]} / rial {caps[1]}); budget capped"
-            self.store.log_event("risk", msg, level="warning")
+            log.warning("wallet below bot book balance (USDT %s / rial %s)", caps[0], caps[1])
+            self.store.log_event(
+                "risk",
+                f"موجودی کیف پول ({caps[0]} تتر / {fmt_rial(caps[1])}) کمتر از موجودی ربات است؛ "
+                "بودجه محدود شد",
+                level="warning",
+            )
             self.notifier.send(
                 "⚠️ موجودی کیف پول کمتر از موجودی دفتری ربات است "
                 f"(USDT {caps[0]} / ریال {caps[1]}). بودجه محدود شد."
@@ -233,10 +239,13 @@ class TradingEngine:
         realized = self.portfolio.apply_fill(fill)
         self.store.record_fill(fill, realized)
         self.strategy.on_fill(fill)
-        text = (f"{fill.side.value} {fill.amount} @ {fill.price} fee={fill.fee} "
-                f"{fill.fee_currency}" + (f" pnl={realized:.0f}" if realized is not None else ""))
-        self.store.log_event("fill", text, data={"order": fill.order_key, "tag": fill.tag})
-        log.info("FILL %s", text)
+        log.info("FILL %s %s @ %s fee=%s %s pnl=%s", fill.side.value, fill.amount, fill.price,
+                 fill.fee, fill.fee_currency, realized)
+        journal = f"{SIDE_FA[fill.side.value]} {fill.amount} تتر به قیمت {fmt_rial(fill.price)}"
+        if realized is not None:
+            journal += f" — سود/زیان: {fmt_rial(realized)}"
+        self.store.log_event("fill", journal, data={"order": fill.order_key, "tag": fill.tag,
+                                                    "fee": fill.fee, "fee_ccy": fill.fee_currency})
         if self.settings.notify.notify_fills:
             side = "🟢 خرید" if fill.side.value == "buy" else "🔴 فروش"
             msg = f"{side} {fill.amount} USDT @ {fmt_rial(fill.price)}"
@@ -253,7 +262,8 @@ class TradingEngine:
         await self._init_portfolio()
         await self._refresh_exchange_caps()
         await self.oms.recover()
-        self.store.log_event("lifecycle", f"started ({self.settings.mode})")
+        mode_fa = "واقعی" if self.settings.mode == "live" else "آزمایشی"
+        self.store.log_event("lifecycle", f"ربات شروع به کار کرد (حالت {mode_fa})")
         self.notifier.send(
             f"🤖 ربات شروع شد — حالت {self.settings.mode} — بازار {self.market.symbol}"
         )
@@ -292,19 +302,21 @@ class TradingEngine:
                     self._heartbeat()
                     errors = 0
                 except AuthError as exc:
-                    self.store.log_event("error", f"auth error: {exc}", level="error")
+                    self.store.log_event(
+                        "error", f"خطای احراز هویت — ربات متوقف شد: {exc}", level="error"
+                    )
                     self.notifier.send(f"⛔️ خطای احراز هویت — ربات متوقف شد: {exc}")
                     raise
                 except TransientError as exc:
                     errors += 1
                     log.warning("transient error (%d): %r", errors, exc)
                     if errors in (1, 5):
-                        self.store.log_event("error", f"transient: {exc!r}", level="warning")
+                        self.store.log_event("error", f"خطای موقت ارتباط: {exc!r}", level="warning")
                     await asyncio.sleep(min(2 * errors, 30))
                 except Exception as exc:
                     errors += 1
                     log.exception("unexpected error (%d)", errors)
-                    self.store.log_event("error", f"unexpected: {exc!r}", level="error")
+                    self.store.log_event("error", f"خطای غیرمنتظره: {exc!r}", level="error")
                     if errors in (1, 5) or errors % 10 == 0:
                         self.notifier.send(f"⚠️ خطای غیرمنتظره: {exc!r}")
                     await asyncio.sleep(min(2 * errors, 30))
@@ -332,17 +344,24 @@ class TradingEngine:
                 log.warning("risk: %s — cancelling all orders", decision.reason)
                 await self.oms.cancel_all()
             if decision.new_event:
-                self.store.log_event("risk", decision.reason, level="warning")
+                self.store.log_event(
+                    "risk", RISK_FA.get(decision.code, decision.reason), level="warning",
+                    data={"detail": decision.reason},
+                )
                 self.notifier.send(f"🛑 توقف معاملات: {decision.reason}")
             return
         if self._risk_code:
-            self.store.log_event("risk", f"trading resumed (was: {self._risk_code})")
+            previous = RISK_FA.get(self._risk_code, self._risk_code)
+            self.store.log_event("risk", f"معاملات از سر گرفته شد (پس از: {previous})")
             self._risk_code = ""
         self.last_risk_reason = ""
         if self.oms.consecutive_rejections >= MAX_CONSECUTIVE_REJECTIONS:
             reason = f"{self.oms.consecutive_rejections} consecutive order rejections"
             self.risk.halt(reason)
-            self.store.log_event("risk", f"halted: {reason}", level="error")
+            self.store.log_event(
+                "risk", f"توقف کامل: {self.oms.consecutive_rejections} سفارش پیاپی رد شد",
+                level="error",
+            )
             self.notifier.send("⛔️ سفارش‌ها پیاپی رد شدند — ربات متوقف شد (resume لازم است)")
             await self.oms.cancel_all()
             return
@@ -360,7 +379,8 @@ class TradingEngine:
         prev_guard = self.last_info.get("guard")
         self.last_info = result.info
         if result.info.get("guard") != prev_guard and result.info.get("guard"):
-            self.store.log_event("strategy", str(result.info["guard"]), level="warning")
+            guard = str(result.info["guard"])
+            self.store.log_event("strategy", GUARD_FA.get(guard, guard), level="warning")
         quotes = self.risk.filter_quotes(result.quotes, book)
         await self.oms.reconcile(quotes, mid)
 
@@ -390,7 +410,7 @@ class TradingEngine:
             except Exception:
                 log.exception("failed to cancel orders on shutdown")
                 self.notifier.send("⚠️ لغو سفارش‌ها هنگام توقف ناموفق بود — دستی بررسی کنید")
-        self.store.log_event("lifecycle", "stopped")
+        self.store.log_event("lifecycle", "ربات متوقف شد")
         st = self.portfolio.state
         mid = self.feed.mid
         if st is not None and mid is not None:

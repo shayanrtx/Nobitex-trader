@@ -118,6 +118,20 @@ def parse_order(data: dict[str, Any]) -> Order:
     )
 
 
+def account_fee(profile: dict[str, Any], dst: str) -> Decimal | None:
+    """Trading fee (fraction) for the user's tier from ``/users/profile``.
+
+    Nobitex reports percentages: ``options.fee`` for rial markets and
+    ``options.feeUsdt`` for tether markets (e.g. ``"0.35"`` → 0.0035).
+    """
+    options = (profile.get("profile") or {}).get("options") or {}
+    raw = options.get("fee") if dst.lower() in ("rls", "irt") else options.get("feeUsdt")
+    pct = to_decimal(raw, Decimal(-1))
+    if pct < 0 or pct >= 5:
+        return None
+    return pct / 100
+
+
 def parse_orderbook(data: dict[str, Any], received_ts: float | None = None) -> OrderBook:
     def levels(raw: Any) -> tuple[tuple[Decimal, Decimal], ...]:
         out = []
@@ -163,6 +177,10 @@ class NobitexRestClient:
         self.limits = RateLimiterRegistry()
         for name, (limit, window) in _LIMITS.items():
             self.limits.register(name, limit, window)
+
+    @property
+    def has_auth(self) -> bool:
+        return self._auth is not None
 
     async def close(self) -> None:
         await self._client.aclose()

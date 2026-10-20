@@ -91,6 +91,8 @@ class BacktestResult:
     final_base: Decimal
     final_quote: Decimal
     days: float
+    orders_placed: int = 0
+    orders_cancelled: int = 0
 
     @property
     def return_pct(self) -> Decimal:
@@ -121,6 +123,8 @@ class BacktestResult:
             f"buy & hold return   : {self.hold_return_pct:.2f}%",
             f"max drawdown        : {self.max_drawdown_pct:.2f}%",
             f"fills               : {self.fills} (buys {self.buys} / sells {self.sells})",
+            f"orders placed       : {self.orders_placed} "
+            f"(~{self.orders_placed / max(self.days, 1e-9) / 144:.1f} per 10 min; cap 300)",
             f"realized pnl        : {toman(self.realized_pnl)} toman",
             f"fees paid           : {toman(self.fees)} toman",
             f"final inventory     : {self.final_base} USDT + {toman(self.final_quote)} toman",
@@ -245,6 +249,8 @@ async def run_backtest(
         final_base=st.base,
         final_quote=st.quote,
         days=(candles_1m[-1].ts - candles_1m[0].ts) / 86400,
+        orders_placed=oms.placed_count,
+        orders_cancelled=oms.cancel_count,
     )
 
 

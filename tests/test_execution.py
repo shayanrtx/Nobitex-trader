@@ -126,3 +126,25 @@ async def test_backtest_smoke(settings) -> None:  # type: ignore[no-untyped-def]
     assert result.end_equity > 0
     # accounting identity: equity = quote + base * price
     assert result.end_equity == result.final_quote + result.final_base * result.end_price
+
+
+async def test_low_budget_keeps_existing_orders(market, store) -> None:  # type: ignore[no-untyped-def]
+    venue = PaperVenue(market, {"usdt": D(500), "rls": D(10**9)})
+    venue.on_book(make_book("999000", "1001000"))
+    limiter = SlidingWindowLimiter(4, 600)
+    oms = OrderManager(venue, market, store, "nbxt", limiter, D("0.0015"), lambda f: None)
+    first = [Quote(Side.BUY, D(990_000), D(10), "b1"), Quote(Side.SELL, D(1_010_000), D(10), "s1")]
+    await oms.reconcile(first, D(1_000_000))
+    # Budget nearly gone; a big move wants both orders replaced, only 2 placements left.
+    moved = [Quote(Side.BUY, D(970_000), D(10), "b1"), Quote(Side.SELL, D(990_000), D(10), "s1"),
+             Quote(Side.BUY, D(960_000), D(10), "b2"), Quote(Side.SELL, D(1_000_000), D(10), "s2")]
+    await oms.reconcile(moved, D(980_000))
+    assert len(oms.open_orders) >= 2  # never left with an empty book
+    assert limiter.available() == 0
+
+
+def test_far_levels_tolerate_more_drift(market, store) -> None:  # type: ignore[no-untyped-def]
+    oms = make_oms(PaperVenue(market, {}), market, store, [])
+    near = oms._tolerance_for(Quote(Side.BUY, D(995_000), D(10)), D(1_000_000))
+    far = oms._tolerance_for(Quote(Side.BUY, D(970_000), D(10)), D(1_000_000))
+    assert far > near * 3
