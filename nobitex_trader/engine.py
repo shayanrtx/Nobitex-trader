@@ -69,6 +69,7 @@ class TradingEngine:
             order_limiter=SlidingWindowLimiter(es.order_rate_limit, es.order_rate_window_seconds),
             requote_tolerance=es.requote_tolerance_pct / 100,
             on_fill=self._on_fill,
+            filled_order_delay=settings.grid.filled_order_delay_seconds,
         )
         self._stop = asyncio.Event()
         self._order_event = asyncio.Event()
@@ -237,6 +238,7 @@ class TradingEngine:
 
     def _on_fill(self, fill: Fill) -> None:
         realized = self.portfolio.apply_fill(fill)
+        self.risk.record_fill(fill)
         self.store.record_fill(fill, realized)
         self.strategy.on_fill(fill)
         log.info("FILL %s %s @ %s fee=%s %s pnl=%s", fill.side.value, fill.amount, fill.price,

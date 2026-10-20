@@ -45,3 +45,17 @@ def atr(candles: Sequence[Candle], period: int) -> Decimal | None:
 
 def clamp(value: Decimal, low: Decimal, high: Decimal) -> Decimal:
     return max(low, min(high, value))
+
+
+def efficiency_ratio(values: Sequence[Decimal], period: int) -> Decimal | None:
+    """Kaufman efficiency ratio: |net move| / sum of |moves| over ``period`` steps.
+
+    ~0 = choppy/ranging (ideal for a grid), ~1 = clean trend.
+    """
+    if period <= 0 or len(values) <= period:
+        return None
+    window = values[-(period + 1):]
+    path = sum((abs(b - a) for a, b in itertools.pairwise(window)), Decimal(0))
+    if path == 0:
+        return Decimal(0)
+    return abs(window[-1] - window[0]) / path

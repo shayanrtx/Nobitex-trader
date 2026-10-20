@@ -94,12 +94,26 @@ class GridSettings(BaseModel):
     # quoting against the move (no knife-catching buys / no selling into a pump).
     momentum_window_seconds: float = 180.0
     momentum_threshold_spacing: Decimal = Decimal("0.8")
+    # Regime filter (Kaufman efficiency ratio over strategy candles, with hysteresis):
+    # ER > enter → trending: stop quoting against the trend (no buys in a downtrend,
+    # no sells in an uptrend) until ER < exit. 0 disables.
+    regime_er_period: int = 16
+    regime_er_enter: Decimal = Decimal("0.5")
+    regime_er_exit: Decimal = Decimal("0.3")
 
     # Classic-grid discipline: never sell below average cost + sell fee + this margin.
     # Suits USDT/IRT (long-term upward drift): in dips the bot accumulates up to
     # max_base_ratio and waits instead of realising losses.
     sell_above_cost: bool = True
     min_profit_over_cost_pct: Decimal = Decimal("0.2")
+    # "Unstuck": if inventory sits at the max ratio for this long, let the sell floor
+    # drop to avg_cost × (1 − unstuck_max_loss_pct%) so capital is not locked forever.
+    # 0 hours disables.
+    unstuck_after_hours: float = 48.0
+    unstuck_max_loss_pct: Decimal = Decimal("0.5")
+    # After a fill on one side, wait before placing new orders on that side
+    # (avoids being swept level after level in a fast move).
+    filled_order_delay_seconds: float = 20.0
 
     @model_validator(mode="after")
     def _check(self) -> GridSettings:
@@ -127,6 +141,16 @@ class RiskSettings(BaseModel):
     # Nobitex rejects prices > 30% away from market; stay well inside.
     max_price_deviation_pct: Decimal = Decimal("10")
     timezone: str = "Asia/Tehran"
+    # Exchange-mandated trading hours (local time). Since Mehr 1405 the USDT/toman
+    # market is halted 23:30–11:30; windows below add a buffer: orders are pulled a
+    # few minutes before the close and the dislocated first minutes after reopening
+    # are skipped. Empty list = trade 24/7. Re-check Nobitex announcements!
+    trading_windows: list[str] = ["11:40-23:20"]
+    # Regulatory per-user cap on USDT bought per (local) day. 0 = no cap.
+    max_daily_buy_base: Decimal = Decimal("2000")
+    # Pause all quoting while price is more than X% away from the local-day open
+    # (shock days; mirrors the central bank's proposed 4% rule). 0 disables.
+    daily_move_pause_pct: Decimal = Decimal("4")
 
 
 class EngineSettings(BaseModel):
@@ -145,6 +169,11 @@ class EngineSettings(BaseModel):
 class PaperSettings(BaseModel):
     initial_base: Decimal = Decimal("0")
     initial_quote: Decimal = Decimal("500000000")
+    # Fill realism for paper trading and backtests: price must trade this many ticks
+    # beyond our order before we count it filled (we are rarely first in the queue).
+    trade_through_ticks: int = 1
+    # Backtest only: max share of each candle's volume our orders may fill.
+    volume_participation: Decimal = Decimal("0.1")
 
 
 class NotifySettings(BaseModel):

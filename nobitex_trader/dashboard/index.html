@@ -236,11 +236,14 @@ function renderSummary(s) {
     state: "وضعیت", fair: "قیمت منصفانه (EMA)", reservation: "مرکز گرید", spacing_pct: "فاصله پله‌ها (٪)",
     atr_pct: "نوسان ATR (٪)", trend: "روند (−۱ تا +۱)", target_base_ratio: "سهم هدف تتر",
     base_ratio: "سهم فعلی تتر", imbalance: "عدم‌توازن اردربوک", momentum_pct: "مومنتوم ۳ دقیقه (٪)",
-    guard: "محافظ مومنتوم", sell_floor: "کف قیمت فروش", candles: "کندل‌ها",
+    guard: "محافظ", regime: "رژیم بازار", efficiency_ratio: "شاخص روند (ER)",
+    sell_floor: "کف قیمت فروش", candles: "کندل‌ها",
   };
   const rial = new Set(["fair", "reservation", "sell_floor"]);
   const words = { quoting: "فعال", warming_up: "در حال گرم شدن", "falling fast: buys paused": "ریزش سریع — خرید متوقف",
-                  "rising fast: sells paused": "رشد سریع — فروش متوقف" };
+                  "rising fast: sells paused": "رشد سریع — فروش متوقف",
+                  "downtrend: buys paused": "روند نزولی — خرید متوقف", "uptrend: sells paused": "روند صعودی — فروش متوقف",
+                  range: "رِنج (مناسب گرید)", trend: "روند دار" };
   $("strategy").innerHTML = Object.entries(labels).filter(([k]) => k in i).map(([k, l]) => {
     const v = i[k];
     let out;
@@ -257,7 +260,7 @@ const KINDS = { fill: "معامله", order: "سفارش", risk: "ریسک", str
   control: "کنترل", lifecycle: "اجرا", portfolio: "پورتفو", fees: "کارمزد" };
 const RISK = {
   halted: "توقف ریسکی", no_book: "بدون اردربوک", stale: "داده قیمت کهنه", one_sided: "اردربوک یک‌طرفه",
-  spread: "اسپرد زیاد", circuit: "حرکت شدید قیمت (استراحت)", daily_loss: "حد ضرر روزانه", paused: "توقف موقت",
+  spread: "اسپرد زیاد", circuit: "حرکت شدید قیمت (استراحت)", daily_loss: "حد ضرر روزانه", paused: "توقف موقت", closed: "خارج از ساعت معاملات", daily_move: "حرکت روزانه شدید",
 };
 
 function renderOrders(orders, mid) {

@@ -123,7 +123,8 @@ def test_portfolio_average_cost_and_pnl(store) -> None:  # type: ignore[no-untyp
 
 def test_risk_circuit_breaker_and_staleness(store) -> None:  # type: ignore[no-untyped-def]
     now = [10_000.0]
-    r = RiskManager(RiskSettings(circuit_breaker_move_pct=D(2)), store, clock=lambda: now[0])
+    rs = RiskSettings(circuit_breaker_move_pct=D(2), trading_windows=[])
+    r = RiskManager(rs, store, clock=lambda: now[0])
     assert r.evaluate(make_book("1000000", "1001000", ts=now[0]), D(10**9)).allow_trading
     now[0] += 30
     stale = r.evaluate(make_book("1000000", "1001000", ts=now[0] - 60), D(10**9))
@@ -136,8 +137,8 @@ def test_risk_circuit_breaker_and_staleness(store) -> None:  # type: ignore[no-u
 
 def test_risk_daily_loss_and_drawdown(store) -> None:  # type: ignore[no-untyped-def]
     now = [1_700_000_000.0]
-    r = RiskManager(RiskSettings(max_daily_loss_pct=D(3), max_drawdown_pct=D(5)), store,
-                    clock=lambda: now[0])
+    rs = RiskSettings(max_daily_loss_pct=D(3), max_drawdown_pct=D(5), trading_windows=[])
+    r = RiskManager(rs, store, clock=lambda: now[0])
     book = lambda: make_book("1000000", "1001000", ts=now[0])  # noqa: E731
     assert r.evaluate(book(), D(1000)).allow_trading
     d = r.evaluate(book(), D(965))
@@ -159,3 +160,66 @@ def test_risk_filters_quotes(store) -> None:  # type: ignore[no-untyped-def]
               Quote(Side.SELL, D(1_010_000), D(10)), Quote(Side.SELL, D(1_020_000), D(10))]
     out = r.filter_quotes(quotes, make_book("999000", "1001000"))
     assert [q.price for q in out] == [D(990_000), D(1_010_000)]
+
+
+def test_trading_windows_and_daily_move(store) -> None:  # type: ignore[no-untyped-def]
+    # 2026-10-20 08:00 UTC = 11:30 Tehran (before the 11:40 open)
+    now = [1792483200.0]
+    r = RiskManager(RiskSettings(), store, clock=lambda: now[0])
+    d = r.evaluate(make_book("1000000", "1001000", ts=now[0]), D(10**9))
+    assert not d.allow_trading and d.code == "closed"
+    now[0] += 3600  # 12:30 Tehran
+    assert r.evaluate(make_book("1000000", "1001000", ts=now[0]), D(10**9)).allow_trading
+    now[0] += 7200
+    shock = r.evaluate(make_book("1045000", "1046000", ts=now[0]), D(10**9))
+    assert not shock.allow_trading and shock.code == "daily_move"
+
+
+def test_overnight_window_parsing() -> None:
+    from datetime import time as t
+
+    from nobitex_trader.risk import _in_window, _parse_window
+
+    w = _parse_window("22:00-06:00")
+    assert _in_window(t(23, 0), w) and _in_window(t(5, 0), w) and not _in_window(t(12, 0), w)
+
+
+def test_daily_buy_cap(store) -> None:  # type: ignore[no-untyped-def]
+    r = RiskManager(RiskSettings(max_daily_buy_base=D(100), trading_windows=[]), store)
+    book = make_book("999000", "1001000")
+    r.evaluate(book, D(10**9))
+    r.record_fill(Fill("x", 1, Side.BUY, D(10**6), D(70), D(0), "usdt", time.time()))
+    quotes = [Quote(Side.BUY, D(995_000), D(20)), Quote(Side.BUY, D(990_000), D(20)),
+              Quote(Side.SELL, D(1_005_000), D(50))]
+    out = r.filter_quotes(quotes, book)
+    assert sum(q.amount for q in out if q.side is Side.BUY) <= D(30)
+    assert any(q.side is Side.SELL for q in out)
+
+
+def test_regime_filter_pauses_buys_in_downtrend(market) -> None:  # type: ignore[no-untyped-def]
+    from nobitex_trader.domain.models import Candle
+
+    candles = flat_candles(130)
+    p0 = 1_000_000
+    for i in range(20):  # clean, steady decline → efficiency ratio ≈ 1
+        p = D(p0 - 4000 * (i + 1))
+        candles.append(Candle(candles[-1].ts + 900, p + 2000, p + 2500, p - 500, p, D(10)))
+    s = AdaptiveGridStrategy(GridSettings(sell_above_cost=False))
+    inv = InventorySnapshot(D(250), D(250_000_000), None)
+    d = s.decide(ctx(market, inv, book=make_book("919000", "921000"), candles=candles))
+    assert d.info["regime"] == "trend"
+    assert not any(q.side is Side.BUY for q in d.quotes)
+
+
+def test_unstuck_lowers_sell_floor(market) -> None:  # type: ignore[no-untyped-def]
+    s = AdaptiveGridStrategy(GridSettings(unstuck_after_hours=1, unstuck_max_loss_pct=D("0.5"),
+                                          imbalance_weight=D(0)))
+    inv = InventorySnapshot(D(840), D(150_000_000), avg_cost=D(1_050_000))
+    t0 = time.time()
+    first = s.decide(StrategyContext(market, make_book("999000", "1001000"), flat_candles(150),
+                                     inv, t0))
+    assert first.info["unstuck"] is False
+    later = s.decide(StrategyContext(market, make_book("999000", "1001000"), flat_candles(150),
+                                     inv, t0 + 3700))
+    assert later.info["unstuck"] is True
+    assert later.info["sell_floor"] < D(1_050_000)

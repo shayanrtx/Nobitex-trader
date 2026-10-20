@@ -132,6 +132,22 @@ def account_fee(profile: dict[str, Any], dst: str) -> Decimal | None:
     return pct / 100
 
 
+def market_rules(options: dict[str, Any], symbol: str, dst: str) -> dict[str, Decimal]:
+    """Tick size, amount step and minimum order value from ``GET /v2/options``."""
+    nbx = options.get("nobitex") or {}
+    out: dict[str, Decimal] = {}
+    tick = to_decimal((nbx.get("pricePrecisions") or {}).get(symbol))
+    step = to_decimal((nbx.get("amountPrecisions") or {}).get(symbol))
+    min_order = to_decimal((nbx.get("minOrders") or {}).get(dst.lower()))
+    if tick > 0:
+        out["price_tick"] = tick
+    if step > 0:
+        out["amount_step"] = step
+    if min_order > 0:
+        out["min_notional"] = min_order
+    return out
+
+
 def parse_orderbook(data: dict[str, Any], received_ts: float | None = None) -> OrderBook:
     def levels(raw: Any) -> tuple[tuple[Decimal, Decimal], ...]:
         out = []
@@ -452,6 +468,9 @@ class NobitexRestClient:
         return out
 
     # ----------------------------------------------------------------- websocket
+
+    async def options(self) -> dict[str, Any]:
+        return await self._request("GET", "/v2/options", limiter="profile")
 
     async def profile(self) -> dict[str, Any]:
         return await self._request("GET", "/users/profile", limiter="profile", private=True)

@@ -17,7 +17,7 @@ from nobitex_trader.engine import TradingEngine
 from nobitex_trader.exchange.auth import ApiKeyAuth, Authenticator, TokenAuth
 from nobitex_trader.exchange.base import TradingVenue
 from nobitex_trader.exchange.paper import PaperVenue
-from nobitex_trader.exchange.rest import NobitexRestClient, account_fee
+from nobitex_trader.exchange.rest import NobitexRestClient, account_fee, market_rules
 from nobitex_trader.exchange.websocket import CentrifugoClient
 from nobitex_trader.notify import BotApiNotifier, Notifier
 from nobitex_trader.persistence.store import Store
@@ -54,6 +54,23 @@ def build_notifier(settings: Settings) -> Notifier:
             prefix="[PAPER] " if settings.mode == "paper" else "",
         )
     return Notifier()
+
+
+async def apply_market_rules(
+    market: MarketSpec, rest: NobitexRestClient, store: Store
+) -> MarketSpec:
+    """Use the exchange's published tick / step / min order instead of config guesses."""
+    try:
+        rules = market_rules(await rest.options(), market.symbol, market.dst)
+    except Exception as exc:
+        log.warning("could not load /v2/options (%r); using configured precision", exc)
+        return market
+    changed = {k: v for k, v in rules.items() if getattr(market, k) != v}
+    if changed:
+        log.info("market rules from exchange: %s", changed)
+        store.log_event("market", "قوانین بازار از نوبیتکس به‌روز شد: " + ", ".join(
+            f"{k}={v}" for k, v in changed.items()))
+    return replace(market, **rules)
 
 
 def _pct(fraction: Decimal) -> str:
@@ -115,6 +132,8 @@ async def run_bot(settings: Settings) -> None:
     strategy = create_strategy(settings)
     live = settings.mode == "live"
 
+    market = await apply_market_rules(market, rest, store)
+
     profile: dict[str, Any] | None = None
     if rest.has_auth:
         profile = await rest.profile()
@@ -146,6 +165,7 @@ async def run_bot(settings: Settings) -> None:
             market,
             {market.src: settings.paper.initial_base, market.dst: settings.paper.initial_quote},
             store=store,
+            trade_through_ticks=settings.paper.trade_through_ticks,
         )
         feed.on_book(paper.on_book)
         feed.on_trade(paper.on_trade)

@@ -4,6 +4,7 @@
     nobitex-trader check               # connectivity, credentials, websocket, dry-run quotes
     nobitex-trader backtest --days 30  # fetch history and backtest the configured strategy
     nobitex-trader fetch-candles --days 60 --out data/usdtirt_1m.csv
+    nobitex-trader optimize --csv F    # walk-forward parameter optimisation
     nobitex-trader status              # portfolio, open orders, recent fills, risk state
     nobitex-trader resume              # clear a risk halt
     nobitex-trader cancel-all          # cancel every bot order on the exchange
@@ -57,6 +58,12 @@ async def _check(settings: Settings) -> int:
     ok = True
     try:
         print(f"mode={settings.mode} market={market.symbol} strategy={settings.strategy}")
+        from nobitex_trader.exchange.rest import market_rules
+
+        rules = market_rules(await rest.options(), market.symbol, market.dst)
+        print(f"✅ market rules from exchange: {rules or 'not found — using config'}")
+        if rules:
+            market = replace(market, **rules)
         book = await rest.orderbook(market.symbol)
         print(f"✅ REST market data: bid={book.best_bid} ask={book.best_ask} "
               f"spread={(book.spread_ratio or 0) * 100:.3f}%")
@@ -162,6 +169,22 @@ def cmd_backtest(settings: Settings, args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_optimize(settings: Settings, args: argparse.Namespace) -> int:
+    from nobitex_trader.backtest import load_csv
+    from nobitex_trader.optimize import run_optimization
+
+    candles = load_csv(Path(args.csv))
+    days = (candles[-1].ts - candles[0].ts) / 86400 if candles else 0
+    print(f"walk-forward optimisation on {len(candles)} candles ({days:.1f} days), "
+          f"{args.configs} configs, IS {args.is_days}d / OOS {args.oos_days}d…")
+    print("(each config is backtested once over the full period; this can take a while)")
+    report = run_optimization(settings, candles, n_configs=args.configs, is_days=args.is_days,
+                              oos_days=args.oos_days, workers=args.workers,
+                              spread=str(args.spread))
+    print(report.summary())
+    return 0
+
+
 def cmd_status(settings: Settings, _args: argparse.Namespace) -> int:
     from nobitex_trader.persistence.store import Store
 
@@ -243,6 +266,13 @@ def main(argv: list[str] | None = None) -> int:
     fc = sub.add_parser("fetch-candles")
     fc.add_argument("--days", type=float, default=30)
     fc.add_argument("--out", default="data/candles_1m.csv")
+    op = sub.add_parser("optimize", help="walk-forward parameter optimisation")
+    op.add_argument("--csv", required=True, help="1-minute candles CSV (from fetch-candles)")
+    op.add_argument("--configs", type=int, default=40)
+    op.add_argument("--is-days", type=float, default=21)
+    op.add_argument("--oos-days", type=float, default=7)
+    op.add_argument("--workers", type=int, default=None)
+    op.add_argument("--spread", type=float, default=0.05)
     sub.add_parser("status")
     sub.add_parser("resume")
     sub.add_parser("cancel-all")
@@ -258,6 +288,7 @@ def main(argv: list[str] | None = None) -> int:
         "check": cmd_check,
         "backtest": cmd_backtest,
         "fetch-candles": cmd_fetch,
+        "optimize": cmd_optimize,
         "status": cmd_status,
         "resume": cmd_resume,
         "cancel-all": cmd_cancel_all,

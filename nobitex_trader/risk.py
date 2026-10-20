@@ -7,6 +7,8 @@ Checks, in order:
 3. **Abnormal spread** — thin/broken book → pull all quotes.
 4. **Circuit breaker** — price moved more than X% inside a short window (news
    shock, depeg rumour, …) → pull quotes and cool down.
+0. **Trading hours** — exchange-mandated windows (USDT/toman halts overnight).
+   **Daily move pause** — price too far from the day's open (shock day).
 5. **Daily loss limit** — equity fell X% since local-day start → pause until the
    next day (Asia/Tehran by default).
 6. **Max drawdown** — equity fell X% from its peak → persistent halt.
@@ -21,11 +23,12 @@ from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
+from datetime import time as dtime
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 from nobitex_trader.config import RiskSettings
-from nobitex_trader.domain.models import OrderBook
+from nobitex_trader.domain.models import Fill, OrderBook, Side
 from nobitex_trader.persistence.store import Store
 from nobitex_trader.strategy.base import Quote
 
@@ -59,6 +62,10 @@ class RiskManager:
         self.day: str | None = state.get("day")
         self.day_start_equity: Decimal | None = state.get("day_start_equity")
         self.day_paused: bool = bool(state.get("day_paused", False))
+        self.price_day: str | None = state.get("price_day")
+        self.day_open_price: Decimal | None = state.get("day_open_price")
+        self.bought_today: Decimal = state.get("bought_today") or Decimal(0)
+        self._windows = [_parse_window(w) for w in settings.trading_windows]
 
     def _save(self) -> None:
         self._store.set(
@@ -69,6 +76,9 @@ class RiskManager:
                 "day": self.day,
                 "day_start_equity": self.day_start_equity,
                 "day_paused": self.day_paused,
+                "price_day": self.price_day,
+                "day_open_price": self.day_open_price,
+                "bought_today": self.bought_today,
             },
         )
 
@@ -100,6 +110,10 @@ class RiskManager:
         if self.halted_reason:
             return RiskDecision(False, f"halted: {self.halted_reason}", halted=True, code="halted")
 
+        local = datetime.fromtimestamp(now, self._tz)
+        if self._windows and not any(_in_window(local.time(), w) for w in self._windows):
+            return RiskDecision(False, "outside trading hours", code="closed")
+
         if book is None or book.mid is None:
             return RiskDecision(False, "no order book", code="no_book")
         if book.age(now) > self.s.stale_data_seconds:
@@ -111,6 +125,16 @@ class RiskManager:
             return RiskDecision(False, f"spread too wide ({spread * HUNDRED:.2f}%)", code="spread")
 
         mid = book.mid
+        day = local.strftime("%Y-%m-%d")
+        if day != self.price_day:
+            self.price_day, self.day_open_price, self.bought_today = day, mid, Decimal(0)
+            self._save()
+        if self.s.daily_move_pause_pct > 0 and self.day_open_price:
+            day_move = abs(mid / self.day_open_price - 1) * HUNDRED
+            if day_move > self.s.daily_move_pause_pct:
+                return RiskDecision(False, f"daily move {day_move:.2f}% beyond limit",
+                                    code="daily_move")
+
         self._prices.append((now, mid))
         while self._prices and now - self._prices[0][0] > self.s.circuit_breaker_window_seconds:
             self._prices.popleft()
@@ -164,6 +188,15 @@ class RiskManager:
 
     # ------------------------------------------------------------------ quotes
 
+    def record_fill(self, fill: Fill) -> None:
+        """Track the regulatory daily buy cap."""
+        if fill.side is Side.BUY:
+            day = datetime.fromtimestamp(fill.timestamp, self._tz).strftime("%Y-%m-%d")
+            if day != self.price_day:
+                self.price_day, self.day_open_price, self.bought_today = day, None, Decimal(0)
+            self.bought_today += fill.amount
+            self._save()
+
     def filter_quotes(self, quotes: list[Quote], book: OrderBook) -> list[Quote]:
         mid = book.mid
         if mid is None:
@@ -171,4 +204,30 @@ class RiskManager:
         limit = self.s.max_price_deviation_pct / HUNDRED
         sane = [q for q in quotes if abs(q.price - mid) / mid <= limit]
         sane.sort(key=lambda q: abs(q.price - mid))
+        if self.s.max_daily_buy_base > 0:
+            # Resting buys count against the cap too, so never quote more than remains.
+            room = self.s.max_daily_buy_base - self.bought_today
+            capped = []
+            for q in sane:
+                if q.side is Side.BUY:
+                    if q.amount > room:
+                        continue
+                    room -= q.amount
+                capped.append(q)
+            sane = capped
         return sane[: self.s.max_open_orders]
+
+
+def _parse_window(text: str) -> tuple[dtime, dtime]:
+    try:
+        start, end = (dtime.fromisoformat(part.strip()) for part in text.split("-"))
+    except ValueError as exc:
+        raise ValueError(f"bad trading window {text!r}; expected HH:MM-HH:MM") from exc
+    return start, end
+
+
+def _in_window(t: dtime, window: tuple[dtime, dtime]) -> bool:
+    start, end = window
+    if start <= end:
+        return start <= t < end
+    return t >= start or t < end  # overnight window, e.g. 22:00-06:00

@@ -15,11 +15,15 @@ RISK_FA = {
     "circuit": "حرکت شدید قیمت (توقف موقت)",
     "daily_loss": "حد ضرر روزانه — توقف تا فردا",
     "paused": "توقف دستی",
+    "closed": "خارج از ساعت معاملات بازار",
+    "daily_move": "حرکت روزانه‌ی قیمت بیش از حد مجاز",
 }
 
 GUARD_FA = {
     "falling fast: buys paused": "ریزش سریع قیمت — خرید موقتاً متوقف شد",
     "rising fast: sells paused": "رشد سریع قیمت — فروش موقتاً متوقف شد",
+    "downtrend: buys paused": "روند نزولی — خرید متوقف شد",
+    "uptrend: sells paused": "روند صعودی — فروش متوقف شد",
 }
 
 

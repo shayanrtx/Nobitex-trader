@@ -57,6 +57,7 @@ class OrderManager:
         requote_tolerance: Decimal,
         on_fill: FillHandler,
         clock: Callable[[], float] = time.time,
+        filled_order_delay: float = 0.0,
     ) -> None:
         if not client_prefix or len(client_prefix) > 8:
             raise ValueError("client_prefix must be 1..8 chars")
@@ -73,6 +74,9 @@ class OrderManager:
         self.consecutive_rejections = 0
         self.placed_count = 0
         self.cancel_count = 0
+        self._fill_delay = filled_order_delay
+        self.market_closed_at = 0.0
+        self._last_fill: dict[Side, float] = {}
 
     # ------------------------------------------------------------------ helpers
 
@@ -175,6 +179,7 @@ class OrderManager:
                 timestamp=self._clock(),
                 tag=current.tag,
             )
+            self._last_fill[fill.side] = fill.timestamp
             try:
                 self._on_fill(fill)
             except Exception:
@@ -226,14 +231,19 @@ class OrderManager:
         # Budget: if we cannot place every replacement, keep the old order rather
         # than cancel it and leave a hole in the book. Orders with no wanted
         # counterpart on their side (e.g. paused by a guard) are always cancelled.
+        # Fill delay: no *new* orders on a side that just traded (existing ones stay).
+        now = self._clock()
+        cooling = {side for side, ts in self._last_fill.items() if now - ts < self._fill_delay}
+        deferred = [q for q in to_place if q.side in cooling]
+        to_place = [q for q in to_place if q.side not in cooling]
         available = max(self._limiter.available(), 0)
-        deferred = to_place[available:]
+        deferred += to_place[available:]
         to_place = to_place[:available]
         for quote in deferred:
             same_side = [o for o in unmatched if o.side is quote.side]
             if same_side:
                 unmatched.remove(min(same_side, key=lambda o: abs(o.price - quote.price)))
-        if deferred:
+        if deferred and not cooling:
             log.warning("order budget low: %d replacement(s) deferred", len(deferred))
         return unmatched, to_place
 
@@ -278,6 +288,11 @@ class OrderManager:
             self._track(placeholder)
             return None
         except OrderRejected as exc:
+            if exc.code == "MarketClosed":
+                # Not a fault of ours: the market is halted (e.g. overnight hours).
+                self.market_closed_at = self._clock()
+                log.info("market closed; order not placed")
+                return None
             self.consecutive_rejections += 1
             log.warning("order rejected (%s): %s %s @ %s", exc.code, quote.side.value,
                         quote.amount, quote.price)

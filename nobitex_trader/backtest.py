@@ -6,22 +6,32 @@ runs live. Each 1-minute candle is replayed as a price path
 (open → low → high → close for green candles, open → high → low → close for red
 ones) and resting orders fill when the path trades through them.
 
-Caveat: fills assume queue priority at our price, and candles hide intra-minute
-noise. Treat results as optimistic and always confirm in paper mode.
+Fill realism (configurable under ``paper:``):
+
+* ``trade_through_ticks`` — the path must trade *beyond* our price by N ticks
+  before we count a fill (we are rarely first in the queue);
+* ``volume_participation`` — at most this share of each candle's volume can fill
+  our orders, so thin minutes give partial fills.
+
+Reported metrics go beyond return: risk-adjusted ratios on daily equity, profit
+factor of realized trades, and *markout* (adverse selection: how price moved
+after our fills — persistently negative markout means we are being picked off).
 """
 
 from __future__ import annotations
 
+import bisect
 import csv
+import itertools
 import math
 from collections import deque
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
 
 from nobitex_trader.config import Settings
-from nobitex_trader.domain.models import Candle, OrderBook, PublicTrade, Side
+from nobitex_trader.domain.models import Candle, Fill, OrderBook, PublicTrade, Side
 from nobitex_trader.exchange.paper import PaperVenue
 from nobitex_trader.exchange.rate_limiter import SlidingWindowLimiter
 from nobitex_trader.execution.order_manager import OrderManager
@@ -31,6 +41,7 @@ from nobitex_trader.risk import RiskManager
 from nobitex_trader.strategy.base import Strategy, StrategyContext
 
 HUGE = Decimal("1e12")
+MARKOUT_MINUTES = (1, 5, 15, 60)
 
 
 def resolution_minutes(resolution: str) -> int:
@@ -93,6 +104,15 @@ class BacktestResult:
     days: float
     orders_placed: int = 0
     orders_cancelled: int = 0
+    sharpe: float = 0.0
+    sortino: float = 0.0
+    profit_factor: float = 0.0
+    win_rate: float = 0.0
+    markout_bps: dict[int, float] = field(default_factory=dict)
+    daily_returns: list[float] = field(default_factory=list)
+    # hourly samples: (ts, equity, base, quote, price) — used by the walk-forward optimizer
+    curve: list[tuple[int, float, float, float, float]] = field(default_factory=list)
+    fill_times: list[int] = field(default_factory=list)
 
     @property
     def return_pct(self) -> Decimal:
@@ -101,6 +121,20 @@ class BacktestResult:
     @property
     def hold_return_pct(self) -> Decimal:
         return (self.hold_equity / self.start_equity - 1) * 100
+
+    @property
+    def inventory_pnl(self) -> Decimal:
+        """Mark-to-market drift of held inventory (everything that is not realized)."""
+        return self.end_equity - self.start_equity - self.realized_pnl
+
+    @property
+    def fill_ratio(self) -> float:
+        return self.fills / self.orders_placed if self.orders_placed else 0.0
+
+    @property
+    def excess_return_pct(self) -> Decimal:
+        """Return over simply holding the starting mix (the honest benchmark)."""
+        return self.return_pct - self.hold_return_pct
 
     @property
     def usdt_return_pct(self) -> Decimal:
@@ -113,6 +147,8 @@ class BacktestResult:
         def toman(v: Decimal) -> str:
             return f"{int(v / 10):,}"
 
+        markout = "  ".join(f"{m}m: {v:+.1f}bps" for m, v in self.markout_bps.items())
+        per_10min = self.orders_placed / max(self.days, 1e-9) / 144
         return "\n".join([
             f"period              : {self.days:.1f} days",
             f"price               : {self.start_price} → {self.end_price} rial",
@@ -121,11 +157,16 @@ class BacktestResult:
             f"strategy return     : {self.return_pct:.2f}% (rial)  |  "
             f"{self.usdt_return_pct:.2f}% (USDT)",
             f"buy & hold return   : {self.hold_return_pct:.2f}%",
+            f"excess vs hold      : {self.excess_return_pct:+.2f}%",
             f"max drawdown        : {self.max_drawdown_pct:.2f}%",
+            f"sharpe / sortino    : {self.sharpe:.2f} / {self.sortino:.2f} (daily, annualised)",
+            f"profit factor       : {self.profit_factor:.2f}   win rate: {self.win_rate:.0%}",
             f"fills               : {self.fills} (buys {self.buys} / sells {self.sells})",
-            f"orders placed       : {self.orders_placed} "
-            f"(~{self.orders_placed / max(self.days, 1e-9) / 144:.1f} per 10 min; cap 300)",
-            f"realized pnl        : {toman(self.realized_pnl)} toman",
+            f"markout (adverse)   : {markout or 'n/a'}",
+            f"orders placed       : {self.orders_placed} (~{per_10min:.1f} per 10 min; cap 300)",
+            f"fill ratio          : {self.fill_ratio:.0%} of placed orders filled",
+            f"realized pnl        : {toman(self.realized_pnl)} toman (closed round trips)",
+            f"inventory pnl       : {toman(self.inventory_pnl)} toman (mark-to-market drift)",
             f"fees paid           : {toman(self.fees)} toman",
             f"final inventory     : {self.final_base} USDT + {toman(self.final_quote)} toman",
         ])
@@ -137,6 +178,18 @@ class _SimClock:
 
     def __call__(self) -> float:
         return self.now
+
+
+def _ratios(daily: list[float]) -> tuple[float, float]:
+    if len(daily) < 3:
+        return 0.0, 0.0
+    mean = sum(daily) / len(daily)
+    var = sum((r - mean) ** 2 for r in daily) / (len(daily) - 1)
+    dvar = sum(min(r, 0.0) ** 2 for r in daily) / len(daily)
+    ann = math.sqrt(365)
+    sharpe = mean / math.sqrt(var) * ann if var > 0 else 0.0
+    sortino = mean / math.sqrt(dvar) * ann if dvar > 0 else (99.0 if mean > 0 else 0.0)
+    return sharpe, sortino
 
 
 async def run_backtest(
@@ -151,33 +204,36 @@ async def run_backtest(
     clock = _SimClock()
     clock.now = float(candles_1m[0].ts)
     store = Store(":memory:")
-    initial_base, initial_quote = settings.paper.initial_base, settings.paper.initial_quote
-    venue = PaperVenue(market, {market.src: initial_base, market.dst: initial_quote}, clock=clock)
+    ps = settings.paper
+    venue = PaperVenue(market, {market.src: ps.initial_base, market.dst: ps.initial_quote},
+                       clock=clock, trade_through_ticks=ps.trade_through_ticks)
     portfolio = Portfolio(store, market.src, market.dst)
-    portfolio.initialize(initial_base, initial_quote, candles_1m[0].open)
+    portfolio.initialize(ps.initial_base, ps.initial_quote, candles_1m[0].open)
     risk = RiskManager(settings.risk, store, clock=clock)
-    counts = {"buy": 0, "sell": 0}
+    fills: list[tuple[Fill, Decimal | None]] = []
 
-    def on_fill(fill):  # type: ignore[no-untyped-def]
+    def on_fill(fill: Fill) -> None:
         realized = portfolio.apply_fill(fill)
+        risk.record_fill(fill)
         store.record_fill(fill, realized)
         strategy.on_fill(fill)
-        counts[fill.side.value] += 1
+        fills.append((fill, realized))
 
     es = settings.engine
     oms = OrderManager(
         venue, market, store, es.client_order_prefix,
         SlidingWindowLimiter(es.order_rate_limit, es.order_rate_window_seconds, clock=clock),
         es.requote_tolerance_pct / 100, on_fill, clock=clock,
+        filled_order_delay=settings.grid.filled_order_delay_seconds,
     )
-    minutes = resolution_minutes(settings.grid.candle_resolution)
+    span = resolution_minutes(settings.grid.candle_resolution) * 60
     half = half_spread_pct / 100
-    history: list[Candle] = []
-    prices: deque[tuple[float, Decimal]] = deque(maxlen=60)
     agg: list[Candle] = []
-    span = minutes * 60
+    prices: deque[tuple[float, Decimal]] = deque(maxlen=60)
     peak = portfolio.equity(candles_1m[0].open)
     max_dd = Decimal(0)
+    day_equity: dict[int, Decimal] = {}
+    curve: list[tuple[int, float, float, float, float]] = []
 
     def book_at(price: Decimal, ts: float) -> OrderBook:
         return OrderBook(
@@ -187,18 +243,18 @@ async def run_backtest(
 
     for candle in candles_1m:
         clock.now = float(candle.ts)
-        # 1) replay the candle's path against resting orders
+        # 1) replay the candle path against resting orders
         venue.on_book(book_at(candle.open, clock.now))
         path = ((candle.low, candle.high) if candle.close >= candle.open
                 else (candle.high, candle.low))
+        volume = candle.volume * ps.volume_participation / 3 if candle.volume > 0 else HUGE
         for i, price in enumerate((*path, candle.close)):
             clock.now = candle.ts + 15.0 * (i + 1)
-            venue.on_trade(PublicTrade(price, HUGE, Side.SELL, clock.now))
+            venue.on_trade(PublicTrade(price, volume, Side.SELL, clock.now))
             prices.append((clock.now, price))
         await oms.sync()
 
-        # 2) update candle history (strategy sees closed + current partial bucket)
-        history.append(candle)
+        # 2) strategy candles (closed buckets + current partial bucket)
         bucket = candle.ts - candle.ts % span
         if agg and agg[-1].ts == bucket:
             last = agg[-1]
@@ -213,9 +269,12 @@ async def run_backtest(
         # 3) decide at the close
         clock.now = candle.ts + 60.0
         book = book_at(candle.close, clock.now)
-        venue.on_book(book)
-        await oms.sync()
         equity = portfolio.equity(candle.close)
+        day_equity[int(candle.ts // 86400)] = equity
+        if not curve or candle.ts - curve[-1][0] >= 3600:
+            snap = portfolio.snapshot()
+            curve.append((candle.ts, float(equity), float(snap.base), float(snap.quote),
+                          float(candle.close)))
         peak = max(peak, equity)
         if peak > 0:
             max_dd = max(max_dd, (peak - equity) / peak * 100)
@@ -234,15 +293,40 @@ async def run_backtest(
     assert st is not None
     end_price = candles_1m[-1].close
     store.close()
+
+    # ---- metrics -----------------------------------------------------------
+    start_equity = st.initial_quote + st.initial_base * candles_1m[0].open
+    equities = [start_equity] + [day_equity[d] for d in sorted(day_equity)]
+    daily = [float(b / a - 1) for a, b in itertools.pairwise(equities) if a > 0]
+    sharpe, sortino = _ratios(daily)
+    pnls = [float(r) for _, r in fills if r is not None]
+    gains = sum(p for p in pnls if p > 0)
+    losses = -sum(p for p in pnls if p < 0)
+    profit_factor = gains / losses if losses > 0 else (99.0 if gains > 0 else 0.0)
+    win_rate = sum(1 for p in pnls if p > 0) / len(pnls) if pnls else 0.0
+
+    times = [c.ts for c in candles_1m]
+    markout: dict[int, float] = {}
+    for minutes in MARKOUT_MINUTES:
+        samples = []
+        for fill, _ in fills:
+            idx = bisect.bisect_left(times, fill.timestamp + minutes * 60)
+            if idx >= len(candles_1m):
+                continue
+            move = (candles_1m[idx].close - fill.price) / fill.price
+            samples.append(float(move if fill.side is Side.BUY else -move) * 10_000)
+        if samples:
+            markout[minutes] = sum(samples) / len(samples)
+
     return BacktestResult(
-        start_equity=st.initial_quote + st.initial_base * candles_1m[0].open,
+        start_equity=start_equity,
         end_equity=portfolio.equity(end_price),
         hold_equity=portfolio.hold_equity(end_price),
         start_price=candles_1m[0].open,
         end_price=end_price,
         fills=st.fill_count,
-        buys=counts["buy"],
-        sells=counts["sell"],
+        buys=sum(1 for f, _ in fills if f.side is Side.BUY),
+        sells=sum(1 for f, _ in fills if f.side is Side.SELL),
         realized_pnl=st.realized_pnl,
         fees=st.fees_quote,
         max_drawdown_pct=max_dd,
@@ -251,6 +335,14 @@ async def run_backtest(
         days=(candles_1m[-1].ts - candles_1m[0].ts) / 86400,
         orders_placed=oms.placed_count,
         orders_cancelled=oms.cancel_count,
+        sharpe=sharpe,
+        sortino=sortino,
+        profit_factor=profit_factor,
+        win_rate=win_rate,
+        markout_bps=markout,
+        daily_returns=daily,
+        curve=curve,
+        fill_times=[int(f.timestamp) for f, _ in fills],
     )
 
 

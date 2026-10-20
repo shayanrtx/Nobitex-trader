@@ -47,6 +47,8 @@ async def test_engine_quotes_and_dashboard(tmp_path) -> None:  # type: ignore[no
         engine={"tick_seconds": 0.05, "min_requote_seconds": 0.05, "order_sync_seconds": 0.05,
                 "equity_snapshot_seconds": 0.1},
         paper={"initial_base": "250", "initial_quote": "250000000"},
+        risk={"trading_windows": []},
+        grid={"filled_order_delay_seconds": 0},
     )
     market = settings.market.spec()
     store = Store(settings.db_path)

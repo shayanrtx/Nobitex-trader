@@ -148,3 +148,23 @@ def test_far_levels_tolerate_more_drift(market, store) -> None:  # type: ignore[
     near = oms._tolerance_for(Quote(Side.BUY, D(995_000), D(10)), D(1_000_000))
     far = oms._tolerance_for(Quote(Side.BUY, D(970_000), D(10)), D(1_000_000))
     assert far > near * 3
+
+
+async def test_fill_delay_defers_same_side_only(market, store) -> None:  # type: ignore[no-untyped-def]
+    now = [1000.0]
+    venue = PaperVenue(market, {"usdt": D(100), "rls": D(10**9)}, clock=lambda: now[0])
+    venue.on_book(make_book("999000", "1001000"))
+    oms = OrderManager(venue, market, store, "nbxt", SlidingWindowLimiter(100, 60),
+                       D("0.0015"), lambda f: None, clock=lambda: now[0],
+                       filled_order_delay=30)
+    await oms.reconcile([Quote(Side.BUY, D(990_000), D(10), "b1")], D(1_000_000))
+    venue.on_trade(PublicTrade(D(980_000), D(100), Side.SELL, now[0]))
+    await oms.sync()
+    now[0] += 5
+    venue.on_book(make_book("984000", "986000"))
+    want = [Quote(Side.BUY, D(975_000), D(10), "b1"), Quote(Side.SELL, D(995_000), D(10), "s1")]
+    await oms.reconcile(want, D(985_000))
+    assert {o.side for o in oms.open_orders} == {Side.SELL}  # buy side cooling down
+    now[0] += 30
+    await oms.reconcile(want, D(985_000))
+    assert {o.side for o in oms.open_orders} == {Side.BUY, Side.SELL}

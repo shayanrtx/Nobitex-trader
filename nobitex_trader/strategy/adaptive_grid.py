@@ -20,6 +20,8 @@ How it works
 6. **Maker only** — prices are clamped so they never cross the book.
 7. **Order-book imbalance** — the centre leans toward the side with more resting
    size (a microprice-style short-term signal that reacts within seconds).
+9. **Regime filter** — Kaufman efficiency ratio with hysteresis: in a clean trend
+   the grid stops quoting against it (the classic way grids lose money).
 8. **Momentum guard** — after a sharp move inside a few minutes, quoting against
    the move is paused: no buying into a crash, no selling into a squeeze.
 """
@@ -33,7 +35,7 @@ from typing import Any
 from nobitex_trader.config import GridSettings
 from nobitex_trader.domain.models import Side
 from nobitex_trader.strategy.base import Quote, Strategy, StrategyContext, StrategyDecision
-from nobitex_trader.strategy.indicators import atr, clamp, ema
+from nobitex_trader.strategy.indicators import atr, clamp, efficiency_ratio, ema
 
 ONE = Decimal(1)
 HUNDRED = Decimal(100)
@@ -47,6 +49,8 @@ class AdaptiveGridStrategy(Strategy):
         self.mean_reversion_weight = mean_reversion_weight
         self._cache: tuple[Any, tuple[Decimal, Decimal, Decimal, Decimal]] | None = None
         self._imbalance = Decimal(0)
+        self._trending = False
+        self._stuck_since: float | None = None
 
     @property
     def warmup_candles(self) -> int:
@@ -114,10 +118,41 @@ class AdaptiveGridStrategy(Strategy):
             elif momentum >= limit:
                 allow_sells, guard = False, "rising fast: sells paused"
 
+        # 7. regime filter: in a clean trend, a grid systematically buys every step down
+        #    (or sells every step up). Hysteresis avoids flapping between regimes.
+        er = None
+        if p.regime_er_period > 0:
+            er = efficiency_ratio([c.close for c in ctx.candles], p.regime_er_period)
+            if er is not None:
+                if self._trending and er < p.regime_er_exit:
+                    self._trending = False
+                elif not self._trending and er > p.regime_er_enter:
+                    self._trending = True
+            if self._trending:
+                closes = ctx.candles
+                direction = closes[-1].close - closes[-1 - p.regime_er_period].close
+                if direction < 0 and allow_buys:
+                    allow_buys = False
+                    guard = guard or "downtrend: buys paused"
+                elif direction > 0 and allow_sells:
+                    allow_sells = False
+                    guard = guard or "uptrend: sells paused"
+
         sell_floor: Decimal | None = None
+        unstuck = False
         if p.sell_above_cost and inv.avg_cost:
             margin = market.maker_fee + p.min_profit_over_cost_pct / HUNDRED
             sell_floor = inv.avg_cost * (ONE + margin)
+            # Unstuck: inventory pinned near the max ratio for too long → accept a small,
+            # bounded loss rather than locking capital indefinitely.
+            if base_ratio >= p.max_base_ratio - Decimal("0.03"):
+                self._stuck_since = self._stuck_since or ctx.now
+            else:
+                self._stuck_since = None
+            if (p.unstuck_after_hours > 0 and self._stuck_since is not None
+                    and ctx.now - self._stuck_since >= p.unstuck_after_hours * 3600):
+                sell_floor = inv.avg_cost * (ONE - p.unstuck_max_loss_pct / HUNDRED)
+                unstuck = True
 
         quotes: list[Quote] = []
         best_bid, best_ask = book.best_bid, book.best_ask
@@ -186,6 +221,9 @@ class AdaptiveGridStrategy(Strategy):
             "momentum_pct": (momentum * HUNDRED).quantize(Decimal("0.001"))
             if momentum is not None else None,
             "guard": guard or None,
+            "efficiency_ratio": er.quantize(Decimal("0.01")) if er is not None else None,
+            "regime": "trend" if self._trending else "range",
+            "unstuck": unstuck,
         }
         return StrategyDecision(quotes, info)
 

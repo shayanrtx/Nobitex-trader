@@ -197,3 +197,30 @@ def test_spacing_floor_follows_detected_fee(market) -> None:  # type: ignore[no-
         pricey, make_book("999000", "1001000"), flat_candles(150),
         InventorySnapshot(Decimal(250), Decimal(250_000_000), None), time.time()))
     assert d.info["spacing_pct"] >= Decimal("1.0")  # 2 × 0.4% × 1.25
+
+
+def test_market_rules_from_options() -> None:
+    from nobitex_trader.exchange.rest import market_rules
+
+    options = {"nobitex": {"pricePrecisions": {"USDTIRT": "10"},
+                           "amountPrecisions": {"USDTIRT": "0.01"},
+                           "minOrders": {"rls": "3000000", "usdt": "11"}}}
+    assert market_rules(options, "USDTIRT", "rls") == {
+        "price_tick": Decimal("10"), "amount_step": Decimal("0.01"),
+        "min_notional": Decimal("3000000")}
+    assert market_rules({}, "USDTIRT", "rls") == {}
+
+
+async def test_market_closed_does_not_count_as_rejection(market, store) -> None:  # type: ignore[no-untyped-def]
+    from nobitex_trader.exchange.rate_limiter import SlidingWindowLimiter
+    from nobitex_trader.execution.order_manager import OrderManager
+    from nobitex_trader.strategy.base import Quote
+
+    class ClosedVenue:
+        async def place_order(self, m, r):  # type: ignore[no-untyped-def]
+            raise OrderRejected("MarketClosed", "MarketClosed")
+
+    oms = OrderManager(ClosedVenue(), market, store, "nbxt", SlidingWindowLimiter(10, 60),  # type: ignore[arg-type]
+                       Decimal("0.001"), lambda f: None)
+    await oms.place(Quote(Side.BUY, Decimal(10**6), Decimal(10)))
+    assert oms.consecutive_rejections == 0 and oms.market_closed_at > 0

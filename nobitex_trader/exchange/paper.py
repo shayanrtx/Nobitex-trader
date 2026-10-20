@@ -45,8 +45,12 @@ class PaperVenue:
         initial_balances: dict[str, Decimal],
         store: Store | None = None,
         clock: Callable[[], float] = time.time,
+        trade_through_ticks: int = 0,
     ) -> None:
         self._market = market
+        # Queue-position realism: a resting order only counts as filled once the market
+        # trades *through* it by this many ticks (0 = optimistic, first in queue).
+        self._through = market.price_tick * trade_through_ticks
         self._store = store
         self._clock = clock
         self._orders: dict[int, Order] = {}
@@ -150,9 +154,9 @@ class PaperVenue:
             if not order.is_open:
                 continue
             if (order.side is Side.BUY and book.best_ask is not None
-                    and book.best_ask <= order.price) or (
+                    and book.best_ask <= order.price - self._through) or (
                     order.side is Side.SELL and book.best_bid is not None
-                    and book.best_bid >= order.price):
+                    and book.best_bid >= order.price + self._through):
                 self._fill(order, order.remaining, order.price, maker=True)
                 changed = True
         if changed:
@@ -164,8 +168,8 @@ class PaperVenue:
         for order in sorted(self._orders.values(), key=lambda o: o.created_at):
             if not order.is_open or volume <= ZERO:
                 continue
-            crosses = (order.side is Side.BUY and trade.price <= order.price) or (
-                order.side is Side.SELL and trade.price >= order.price
+            crosses = (order.side is Side.BUY and trade.price <= order.price - self._through) or (
+                order.side is Side.SELL and trade.price >= order.price + self._through
             )
             if crosses:
                 qty = min(order.remaining, volume)
